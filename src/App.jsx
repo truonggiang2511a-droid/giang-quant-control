@@ -10,22 +10,30 @@ function App() {
     setError("");
 
     const { data, error } = await supabase
-      .from("bot_instances")
-      .select(`
-        id,
-        mt5_account_id,
-        ea_name,
-        ea_version,
-        symbol,
-        timeframe,
-        status,
-        enabled,
-        last_seen,
-        balance,
-        equity,
-        daily_profit,
-        drawdown
-      `)
+      const { data, error } = await supabase
+  .from("bot_instances")
+  .select(`
+    id,
+    mt5_account_id,
+    ea_name,
+    ea_version,
+    symbol,
+    timeframe,
+    status,
+    enabled,
+    last_seen,
+    balance,
+    equity,
+    daily_profit,
+    drawdown,
+    mt5_accounts (
+      mt5_login,
+      broker,
+      server,
+      status
+    )
+  `)
+  .order("created_at", { ascending: false });
       .order("created_at", { ascending: false });
 
     if (error) {

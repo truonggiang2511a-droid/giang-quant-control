@@ -11,10 +11,6 @@ import {
   signOut,
 } from "./auth";
 
-// ============================================================
-// COMMANDS
-// ============================================================
-
 const COMMANDS = {
   ENABLE: "ENABLE",
   PAUSE: "PAUSE",
@@ -30,6 +26,101 @@ const COMMAND_LABELS = {
 };
 
 // ============================================================
+// BOT STATUS
+// ============================================================
+
+function getBotStatus(bot, currentTime = Date.now()) {
+  if (!bot.last_seen) {
+    return {
+      key: "offline",
+      label: "OFFLINE",
+      seconds: null,
+    };
+  }
+
+  const lastSeen = new Date(bot.last_seen).getTime();
+
+  if (Number.isNaN(lastSeen)) {
+    return {
+      key: "offline",
+      label: "OFFLINE",
+      seconds: null,
+    };
+  }
+
+  const seconds = Math.max(
+    0,
+    Math.floor((currentTime - lastSeen) / 1000)
+  );
+
+  if (seconds > 60) {
+    return {
+      key: "offline",
+      label: "OFFLINE",
+      seconds,
+    };
+  }
+
+  if (seconds > 15) {
+    return {
+      key: "warning",
+      label: "WARNING",
+      seconds,
+    };
+  }
+
+  if (bot.enabled === false) {
+    return {
+      key: "paused",
+      label: "PAUSED",
+      seconds,
+    };
+  }
+
+  return {
+    key: "online",
+    label: "ONLINE",
+    seconds,
+  };
+}
+
+function formatMoney(value) {
+  return Number(value || 0).toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function formatDate(value) {
+  if (!value) return "--";
+
+  try {
+    return new Date(value).toLocaleString("vi-VN", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+  } catch {
+    return "--";
+  }
+}
+
+function formatAgo(seconds) {
+  if (seconds === null || seconds === undefined) {
+    return "--";
+  }
+
+  if (seconds < 60) {
+    return `${seconds}s ago`;
+  }
+
+  return `${Math.floor(seconds / 60)}m ago`;
+}
+
+// ============================================================
 // APP
 // ============================================================
 
@@ -38,51 +129,39 @@ export default function App() {
   // AUTH
   // ==========================================================
 
-  const [session, setSession] =
-    useState(null);
-
-  const [checkingAuth, setCheckingAuth] =
-    useState(true);
+  const [session, setSession] = useState(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
   // ==========================================================
-  // BOT STATE
+  // DATA
   // ==========================================================
 
   const [bots, setBots] = useState([]);
+  const [commands, setCommands] = useState([]);
 
-  const [
-    pendingCommands,
-    setPendingCommands,
-  ] = useState({});
-
-  const [
-    lastCommandByBot,
-    setLastCommandByBot,
-  ] = useState({});
+  const [pendingCommands, setPendingCommands] = useState({});
+  const [trackedCommands, setTrackedCommands] = useState({});
 
   // ==========================================================
-  // UI STATE
+  // UI
   // ==========================================================
 
-  const [loading, setLoading] =
-    useState(true);
+  const [page, setPage] = useState("dashboard");
+  const [botSearch, setBotSearch] = useState("");
+  const [botFilter, setBotFilter] = useState("ALL");
+  const [commandFilter, setCommandFilter] = useState("ALL");
 
-  const [refreshing, setRefreshing] =
-    useState(false);
+  const [now, setNow] = useState(Date.now());
 
-  const [
-    commandLoading,
-    setCommandLoading,
-  ] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [commandLoading, setCommandLoading] = useState(null);
 
-  const [error, setError] =
-    useState("");
-
-  const [message, setMessage] =
-    useState("");
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
 
   // ==========================================================
-  // AUTH CHECK
+  // AUTH
   // ==========================================================
 
   useEffect(() => {
@@ -91,33 +170,19 @@ export default function App() {
     async function checkAuth() {
       try {
         if (!supabase) {
-          if (mounted) {
-            setCheckingAuth(false);
-          }
-
+          setCheckingAuth(false);
           return;
         }
 
         const {
-          data: {
-            session: currentSession,
-          },
-          error: sessionError,
+          data: { session: currentSession },
         } = await supabase.auth.getSession();
-
-        if (sessionError) {
-          throw sessionError;
-        }
 
         if (mounted) {
           setSession(currentSession);
         }
       } catch (err) {
-        console.error(
-          "AUTH SESSION ERROR:",
-          err
-        );
-
+        console.error("AUTH ERROR:", err);
         if (mounted) {
           setSession(null);
         }
@@ -137,17 +202,14 @@ export default function App() {
     }
 
     const {
-      data: {
-        subscription,
-      },
-    } =
-      supabase.auth.onAuthStateChange(
-        (_event, newSession) => {
-          if (mounted) {
-            setSession(newSession);
-          }
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(
+      (_event, newSession) => {
+        if (mounted) {
+          setSession(newSession);
         }
-      );
+      }
+    );
 
     return () => {
       mounted = false;
@@ -156,17 +218,24 @@ export default function App() {
   }, []);
 
   // ==========================================================
-  // LOAD BOTS
+  // CLOCK
   // ==========================================================
 
-  async function loadBots(
-    showLoading = false
-  ) {
-    if (!supabase) {
-      setError(
-        "Supabase chưa được cấu hình. Kiểm tra Environment Variables."
-      );
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
 
+    return () => clearInterval(timer);
+  }, []);
+
+  // ==========================================================
+  // LOAD DATA
+  // ==========================================================
+
+  async function loadData(showLoading = false) {
+    if (!supabase) {
+      setError("Supabase chưa được cấu hình.");
       setLoading(false);
       return;
     }
@@ -178,9 +247,9 @@ export default function App() {
     try {
       setError("");
 
-      // ========================================================
-      // LOAD BOT
-      // ========================================================
+      // --------------------------------------------------------
+      // BOTS
+      // --------------------------------------------------------
 
       const {
         data: botData,
@@ -218,13 +287,9 @@ export default function App() {
         throw botError;
       }
 
-      const safeBots = botData || [];
-
-      setBots(safeBots);
-
-      // ========================================================
-      // LOAD COMMAND HISTORY
-      // ========================================================
+      // --------------------------------------------------------
+      // COMMANDS
+      // --------------------------------------------------------
 
       const {
         data: commandData,
@@ -236,6 +301,7 @@ export default function App() {
           bot_instance_id,
           command,
           status,
+          message,
           created_at,
           executed_at
         `)
@@ -248,413 +314,56 @@ export default function App() {
         throw commandError;
       }
 
-      const commands =
-        commandData || [];
+      const safeBots = botData || [];
+      const safeCommands = commandData || [];
 
-      // ========================================================
-      // PENDING MAP
-      // ========================================================
+      setBots(safeBots);
+      setCommands(safeCommands);
+
+      // --------------------------------------------------------
+      // PENDING
+      // --------------------------------------------------------
 
       const pendingMap = {};
 
-      for (const command of commands) {
+      for (const item of safeCommands) {
         if (
-          command.status ===
-            "pending" &&
-          !pendingMap[
-            command.bot_instance_id
-          ]
+          item.status === "pending" &&
+          !pendingMap[item.bot_instance_id]
         ) {
-          pendingMap[
-            command.bot_instance_id
-          ] = command;
+          pendingMap[item.bot_instance_id] = item;
         }
       }
 
-      setPendingCommands(
-        pendingMap
-      );
+      setPendingCommands(pendingMap);
 
-      // ========================================================
-      // COMMAND FEEDBACK
-      // ========================================================
+      // --------------------------------------------------------
+      // TRACK EXECUTION
+      // --------------------------------------------------------
 
-      const nextTracked = {
-        ...lastCommandByBot,
-      };
+      setTrackedCommands((current) => {
+        const next = { ...current };
 
-      for (const bot of safeBots) {
-        const tracked =
-          nextTracked[bot.id];
-
-        const pending =
-          pendingMap[bot.id];
-
-        // ------------------------------------------------------
-        // STILL PENDING
-        // ------------------------------------------------------
-
-        if (pending) {
-          nextTracked[bot.id] = {
-            command:
-              pending.command,
-            commandId:
-              pending.id,
-            status: "pending",
-          };
-
-          continue;
-        }
-
-        // ------------------------------------------------------
-        // COMMAND EXECUTED
-        // ------------------------------------------------------
-
-        if (!tracked?.commandId) {
-          continue;
-        }
-
-        const matchingCommand =
-          commands.find(
-            (item) =>
-              item.id ===
-              tracked.commandId
-          );
-
-        if (!matchingCommand) {
-          continue;
-        }
-
-        if (
-          matchingCommand.status !==
-          "executed"
-        ) {
-          continue;
-        }
-
-        const command =
-          String(
-            matchingCommand.command ||
-              ""
-          ).toUpperCase();
-
-        let confirmed =
-          false;
-
-        if (
-          command ===
-          COMMANDS.ENABLE
-        ) {
-          confirmed =
-            bot.enabled === true;
-        }
-
-        if (
-          command ===
-          COMMANDS.PAUSE
-        ) {
-          confirmed =
-            bot.enabled === false;
-        }
-
-        if (
-          command ===
-            COMMANDS.CLOSE_ALL ||
-          command ===
-            COMMANDS.KILL
-        ) {
-          confirmed = true;
-        }
-
-        if (
-          confirmed &&
-          tracked.status !==
-            "executed"
-        ) {
-          let successMessage =
-            "✅ Lệnh đã được EA xác nhận.";
-
+        for (const item of safeCommands) {
           if (
-            command ===
-            COMMANDS.ENABLE
+            item.status === "executed" &&
+            next[item.bot_instance_id]?.commandId === item.id
           ) {
-            successMessage =
-              "✅ EA đã BẬT thành công.";
+            next[item.bot_instance_id] = {
+              ...next[item.bot_instance_id],
+              command: item.command,
+              status: "executed",
+            };
           }
-
-          if (
-            command ===
-            COMMANDS.PAUSE
-          ) {
-            successMessage =
-              "✅ EA đã TẮT và chuyển sang PAUSED.";
-          }
-
-          if (
-            command ===
-            COMMANDS.CLOSE_ALL
-          ) {
-            successMessage =
-              "✅ Đã đóng tất cả lệnh.";
-          }
-
-          if (
-            command ===
-            COMMANDS.KILL
-          ) {
-            successMessage =
-              "✅ EA đã nhận lệnh KILL.";
-          }
-
-          setMessage(
-            successMessage
-          );
-
-          nextTracked[bot.id] = {
-            ...tracked,
-            command,
-            status:
-              "executed",
-          };
-
-          setTimeout(() => {
-            setMessage(
-              (current) =>
-                current ===
-                successMessage
-                  ? ""
-                  : current
-            );
-          }, 4000);
         }
-      }
 
-      setLastCommandByBot(
-        nextTracked
-      );
-
-      // ========================================================
-      // KHÔNG CÒN PENDING
-      // ========================================================
-
-      const hasPending =
-        Object.keys(
-          pendingMap
-        ).length > 0;
-
-      if (!hasPending) {
-        setMessage(
-          (current) => {
-            if (
-              current.includes(
-                "Đang chờ EA xác nhận"
-              )
-            ) {
-              return "";
-            }
-
-            return current;
-          }
-        );
-      }
+        return next;
+      });
     } catch (err) {
-      console.error(
-        "DASHBOARD LOAD ERROR:",
-        err
-      );
-
-      setError(
-        err?.message ||
-          "Không thể tải dữ liệu."
-      );
+      console.error("LOAD ERROR:", err);
+      setError(err?.message || "Không thể tải dữ liệu.");
     } finally {
       setLoading(false);
-    }
-  }
-
-  // ==========================================================
-  // REFRESH
-  // ==========================================================
-
-  async function handleRefresh() {
-    if (refreshing) {
-      return;
-    }
-
-    setRefreshing(true);
-
-    try {
-      await loadBots(false);
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
-  // ==========================================================
-  // SEND COMMAND
-  // ==========================================================
-
-  async function sendCommand(
-    bot,
-    command
-  ) {
-    if (
-      commandLoading ||
-      pendingCommands[bot.id]
-    ) {
-      return;
-    }
-
-    setError("");
-    setMessage("");
-
-    // ----------------------------------------------------------
-    // DANGEROUS COMMAND CONFIRM
-    // ----------------------------------------------------------
-
-    if (
-      command ===
-        COMMANDS.CLOSE_ALL ||
-      command ===
-        COMMANDS.KILL
-    ) {
-      const confirmed =
-        window.confirm(
-          `Bạn có chắc muốn ${
-            COMMAND_LABELS[
-              command
-            ]
-          } cho ${
-            bot.ea_name ||
-            "GIANG QUANT X"
-          }?`
-        );
-
-      if (!confirmed) {
-        return;
-      }
-    }
-
-    setCommandLoading(
-      `${bot.id}-${command}`
-    );
-
-    try {
-      // --------------------------------------------------------
-      // CHECK PENDING
-      // --------------------------------------------------------
-
-      const {
-        data: pending,
-        error: pendingError,
-      } = await supabase
-        .from("bot_commands")
-        .select(
-          "id, command, status, created_at"
-        )
-        .eq(
-          "bot_instance_id",
-          bot.id
-        )
-        .eq(
-          "status",
-          "pending"
-        )
-        .order(
-          "created_at",
-          {
-            ascending: false,
-          }
-        )
-        .limit(1);
-
-      if (pendingError) {
-        throw pendingError;
-      }
-
-      if (
-        pending &&
-        pending.length > 0
-      ) {
-        setError(
-          `Bot đang có lệnh ${pending[0].command} chờ EA xử lý.`
-        );
-
-        return;
-      }
-
-      // --------------------------------------------------------
-      // INSERT COMMAND
-      // --------------------------------------------------------
-
-      const {
-        data:
-          insertedCommand,
-        error: insertError,
-      } = await supabase
-        .from("bot_commands")
-        .insert({
-          bot_instance_id:
-            bot.id,
-
-          command,
-
-          status:
-            "pending",
-
-          message:
-            `Dashboard command: ${command}`,
-        })
-        .select()
-        .single();
-
-      if (insertError) {
-        throw insertError;
-      }
-
-      // --------------------------------------------------------
-      // TRACK COMMAND
-      // --------------------------------------------------------
-
-      setLastCommandByBot(
-        (current) => ({
-          ...current,
-
-          [bot.id]: {
-            command,
-            commandId:
-              insertedCommand?.id,
-            status:
-              "pending",
-          },
-        })
-      );
-
-      // --------------------------------------------------------
-      // SHOW WAITING
-      // --------------------------------------------------------
-
-      setMessage(
-        `🟡 ${COMMAND_LABELS[command]} đã được gửi. Đang chờ EA xác nhận...`
-      );
-
-      // --------------------------------------------------------
-      // REFRESH
-      // --------------------------------------------------------
-
-      await loadBots(false);
-    } catch (err) {
-      console.error(
-        "COMMAND ERROR:",
-        err
-      );
-
-      setError(
-        err?.message ||
-          "Không thể gửi lệnh tới bot."
-      );
-    } finally {
-      setCommandLoading(null);
     }
   }
 
@@ -663,105 +372,236 @@ export default function App() {
   // ==========================================================
 
   useEffect(() => {
-    if (!session) {
-      return;
-    }
+    if (!session) return;
 
-    loadBots(true);
+    loadData(true);
 
-    const timer =
-      setInterval(() => {
-        loadBots(false);
-      }, 5000);
+    const timer = setInterval(() => {
+      loadData(false);
+    }, 5000);
 
-    return () => {
-      clearInterval(timer);
-    };
+    return () => clearInterval(timer);
   }, [session]);
 
   // ==========================================================
-  // STATISTICS
+  // REFRESH
   // ==========================================================
 
-  const totalBots =
-    bots.length;
+  async function handleRefresh() {
+    if (refreshing) return;
 
-  const onlineBots =
-    useMemo(
-      () =>
-        bots.filter(
-          (bot) =>
-            String(
-              bot.status
-            ).toLowerCase() ===
-            "online"
-        ).length,
-      [bots]
-    );
+    setRefreshing(true);
 
-  const runningBots =
-    useMemo(
-      () =>
-        bots.filter(
-          (bot) =>
-            bot.enabled ===
-            true
-        ).length,
-      [bots]
-    );
-
-  const pausedBots =
-    useMemo(
-      () =>
-        bots.filter(
-          (bot) =>
-            bot.enabled ===
-              false &&
-            String(
-              bot.status
-            ).toLowerCase() ===
-              "online"
-        ).length,
-      [bots]
-    );
-
-  const offlineBots =
-    bots.filter(
-      (bot) =>
-        String(
-          bot.status
-        ).toLowerCase() !==
-        "online"
-    ).length;
+    try {
+      await loadData(false);
+    } finally {
+      setRefreshing(false);
+    }
+  }
 
   // ==========================================================
-  // AUTH LOADING
+  // COMMAND
+  // ==========================================================
+
+  async function sendCommand(bot, command) {
+    if (
+      commandLoading ||
+      pendingCommands[bot.id]
+    ) {
+      return;
+    }
+
+    setMessage("");
+    setError("");
+
+    if (
+      command === COMMANDS.CLOSE_ALL ||
+      command === COMMANDS.KILL
+    ) {
+      const ok = window.confirm(
+        `Bạn có chắc muốn ${COMMAND_LABELS[command]} cho ${
+          bot.ea_name || "GIANG QUANT X"
+        }?`
+      );
+
+      if (!ok) return;
+    }
+
+    setCommandLoading(`${bot.id}-${command}`);
+
+    try {
+      const {
+        data: pending,
+        error: pendingError,
+      } = await supabase
+        .from("bot_commands")
+        .select("id, command, status")
+        .eq("bot_instance_id", bot.id)
+        .eq("status", "pending")
+        .order("created_at", {
+          ascending: false,
+        })
+        .limit(1);
+
+      if (pendingError) {
+        throw pendingError;
+      }
+
+      if (pending?.length) {
+        setError(
+          `Bot đang có lệnh ${pending[0].command} chờ EA xử lý.`
+        );
+        return;
+      }
+
+      const {
+        data: inserted,
+        error: insertError,
+      } = await supabase
+        .from("bot_commands")
+        .insert({
+          bot_instance_id: bot.id,
+          command,
+          status: "pending",
+          message: `Dashboard command: ${command}`,
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        throw insertError;
+      }
+
+      setTrackedCommands((current) => ({
+        ...current,
+        [bot.id]: {
+          command,
+          commandId: inserted?.id,
+          status: "pending",
+        },
+      }));
+
+      setMessage(
+        `🟡 ${COMMAND_LABELS[command]} đã được gửi.`
+      );
+
+      await loadData(false);
+    } catch (err) {
+      console.error("COMMAND ERROR:", err);
+
+      setError(
+        err?.message || "Không thể gửi lệnh."
+      );
+    } finally {
+      setCommandLoading(null);
+    }
+  }
+
+  // ==========================================================
+  // STATUS
+  // ==========================================================
+
+  const botsWithStatus = useMemo(() => {
+    return bots.map((bot) => ({
+      ...bot,
+      liveStatus: getBotStatus(bot, now),
+    }));
+  }, [bots, now]);
+
+  // ==========================================================
+  // STATS
+  // ==========================================================
+
+  const stats = useMemo(() => {
+    return {
+      total: botsWithStatus.length,
+      online: botsWithStatus.filter(
+        (bot) => bot.liveStatus.key === "online"
+      ).length,
+      warning: botsWithStatus.filter(
+        (bot) => bot.liveStatus.key === "warning"
+      ).length,
+      paused: botsWithStatus.filter(
+        (bot) => bot.liveStatus.key === "paused"
+      ).length,
+      offline: botsWithStatus.filter(
+        (bot) => bot.liveStatus.key === "offline"
+      ).length,
+    };
+  }, [botsWithStatus]);
+
+  // ==========================================================
+  // FILTER BOTS
+  // ==========================================================
+
+  const filteredBots = useMemo(() => {
+    const keyword = botSearch.trim().toLowerCase();
+
+    return botsWithStatus.filter((bot) => {
+      const account = bot.mt5_accounts;
+
+      const text = [
+        bot.ea_name,
+        bot.ea_version,
+        bot.symbol,
+        bot.timeframe,
+        account?.mt5_login,
+        account?.broker,
+        account?.server,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+
+      const matchSearch =
+        !keyword ||
+        text.includes(keyword);
+
+      const matchFilter =
+        botFilter === "ALL" ||
+        bot.liveStatus.key === botFilter.toLowerCase();
+
+      return matchSearch && matchFilter;
+    });
+  }, [
+    botsWithStatus,
+    botSearch,
+    botFilter,
+  ]);
+
+  // ==========================================================
+  // FILTER COMMANDS
+  // ==========================================================
+
+  const filteredCommands = useMemo(() => {
+    if (commandFilter === "ALL") {
+      return commands;
+    }
+
+    return commands.filter(
+      (item) =>
+        String(item.status).toUpperCase() ===
+        commandFilter
+    );
+  }, [commands, commandFilter]);
+
+  // ==========================================================
+  // LOGIN
   // ==========================================================
 
   if (checkingAuth) {
     return (
       <div className="loading-screen">
         <div>
-          <div className="brand-mark">
-            GQ
-          </div>
-
-          <p>
-            Đang kiểm tra đăng nhập...
-          </p>
+          <div className="brand-mark">GQ</div>
+          <p>Đang kiểm tra đăng nhập...</p>
         </div>
       </div>
     );
   }
 
-  // ==========================================================
-  // LOGIN
-  // ==========================================================
-
   if (!session) {
-    return (
-      <LoginScreen />
-    );
+    return <LoginScreen />;
   }
 
   // ==========================================================
@@ -770,15 +610,9 @@ export default function App() {
 
   return (
     <div className="app-shell">
-      {/* ======================================================
-          SIDEBAR
-      ====================================================== */}
-
       <aside className="sidebar">
         <div className="brand">
-          <div className="brand-mark">
-            GQ
-          </div>
+          <div className="brand-mark">GQ</div>
 
           <div>
             <div className="brand-title">
@@ -792,35 +626,57 @@ export default function App() {
         </div>
 
         <nav>
-          <div className="nav-item active">
+          <button
+            className={`nav-item ${
+              page === "dashboard" ? "active" : ""
+            }`}
+            onClick={() => setPage("dashboard")}
+          >
             Dashboard
-          </div>
+          </button>
 
-          <div className="nav-item">
+          <button
+            className={`nav-item ${
+              page === "bots" ? "active" : ""
+            }`}
+            onClick={() => setPage("bots")}
+          >
             EA Bots
-          </div>
+          </button>
 
-          <div className="nav-item">
+          <button
+            className="nav-item"
+            onClick={() => setPage("mt5")}
+          >
             MT5 Accounts
-          </div>
+          </button>
 
-          <div className="nav-item">
+          <button
+            className="nav-item"
+            onClick={() => setPage("licenses")}
+          >
             Licenses
-          </div>
+          </button>
 
-          <div className="nav-item">
+          <button
+            className={`nav-item ${
+              page === "commands" ? "active" : ""
+            }`}
+            onClick={() => setPage("commands")}
+          >
             Commands
-          </div>
+          </button>
 
-          <div className="nav-item">
+          <button
+            className="nav-item"
+            onClick={() => setPage("logs")}
+          >
             Activity Logs
-          </div>
+          </button>
         </nav>
 
         <div className="sidebar-footer">
-          <div>
-            Production · Singapore
-          </div>
+          <div>Production · Singapore</div>
 
           <button
             className="logout-button"
@@ -833,46 +689,7 @@ export default function App() {
         </div>
       </aside>
 
-      {/* ======================================================
-          MAIN
-      ====================================================== */}
-
       <main className="main">
-        <header className="topbar">
-          <div>
-            <div className="eyebrow">
-              BOT MANAGEMENT
-            </div>
-
-            <h1>
-              EA Control Dashboard
-            </h1>
-
-            <p>
-              Quản lý EA MT5 theo
-              thời gian thực.
-            </p>
-          </div>
-
-          <button
-            className="refresh"
-            onClick={
-              handleRefresh
-            }
-            disabled={
-              refreshing
-            }
-          >
-            {refreshing
-              ? "Đang cập nhật..."
-              : "↻ Làm mới"}
-          </button>
-        </header>
-
-        {/* ====================================================
-            MESSAGE
-        ==================================================== */}
-
         {message && (
           <div className="alert success">
             {message}
@@ -881,507 +698,688 @@ export default function App() {
 
         {error && (
           <div className="alert error">
-            <strong>
-              Lỗi:
-            </strong>{" "}
-            {error}
+            <strong>Lỗi:</strong> {error}
           </div>
         )}
 
-        {/* ====================================================
-            STATS
-        ==================================================== */}
+        {/* ======================================================
+            DASHBOARD
+        ====================================================== */}
 
-        <section className="stats">
-          <div className="stat-card">
-            <span>
-              TỔNG BOT
-            </span>
-
-            <strong>
-              {totalBots}
-            </strong>
-
-            <small>
-              Bot đã đăng ký
-            </small>
-          </div>
-
-          <div className="stat-card">
-            <span>
-              ONLINE
-            </span>
-
-            <strong className="green">
-              {onlineBots}
-            </strong>
-
-            <small>
-              Đang heartbeat
-            </small>
-          </div>
-
-          <div className="stat-card">
-            <span>
-              ĐANG CHẠY
-            </span>
-
-            <strong className="blue">
-              {runningBots}
-            </strong>
-
-            <small>
-              Remote enabled
-            </small>
-          </div>
-
-          <div className="stat-card">
-            <span>
-              PAUSED
-            </span>
-
-            <strong
-              style={{
-                color:
-                  "#f59e0b",
-              }}
-            >
-              {pausedBots}
-            </strong>
-
-            <small>
-              EA online nhưng
-              đang tắt bot
-            </small>
-          </div>
-        </section>
-
-        {/* ====================================================
-            BOT PANEL
-        ==================================================== */}
-
-        <section className="panel">
-          <div className="panel-head">
-            <div>
-              <h2>
-                EA Bots
-              </h2>
-
-              <p>
-                Trạng thái thực tế
-                từ Supabase.
-              </p>
-            </div>
-
-            <span className="live-badge">
-              ● LIVE
-            </span>
-          </div>
-
-          {loading && (
-            <div className="empty">
-              Đang tải dữ liệu...
-            </div>
-          )}
-
-          {!loading &&
-            !error &&
-            bots.length ===
-              0 && (
-              <div className="empty">
-                <div className="empty-icon">
-                  ◎
+        {page === "dashboard" && (
+          <>
+            <header className="topbar">
+              <div>
+                <div className="eyebrow">
+                  BOT MANAGEMENT
                 </div>
 
-                <h3>
-                  Chưa có bot
-                </h3>
+                <h1>EA Control Dashboard</h1>
 
                 <p>
-                  Chạy EA trên MT5
-                  để tạo bot.
+                  Tổng quan hệ thống EA MT5.
                 </p>
               </div>
-            )}
 
-          <div className="bot-list">
-            {bots.map(
-              (bot) => {
-                const account =
-                  bot.mt5_accounts;
+              <button
+                className="refresh"
+                onClick={handleRefresh}
+                disabled={refreshing}
+              >
+                {refreshing
+                  ? "Đang cập nhật..."
+                  : "↻ Làm mới"}
+              </button>
+            </header>
 
-                const pending =
-                  pendingCommands[
-                    bot.id
-                  ];
+            <section className="stats">
+              <StatCard
+                label="TỔNG BOT"
+                value={stats.total}
+                note="Bot đã đăng ký"
+              />
 
-                const tracked =
-                  lastCommandByBot[
-                    bot.id
-                  ];
+              <StatCard
+                label="ONLINE"
+                value={stats.online}
+                note="Đang hoạt động"
+                className="green"
+              />
 
-                const isOnline =
-                  String(
-                    bot.status
-                  ).toLowerCase() ===
-                  "online";
+              <StatCard
+                label="WARNING / PAUSED"
+                value={stats.warning + stats.paused}
+                note="Cần chú ý"
+                color="#f59e0b"
+              />
 
-                const isEnabled =
-                  bot.enabled ===
-                  true;
+              <StatCard
+                label="OFFLINE"
+                value={stats.offline}
+                note="Mất heartbeat"
+                className="red"
+              />
+            </section>
 
-                const command =
-                  pending?.command?.toUpperCase();
+            <section className="panel">
+              <div className="panel-head">
+                <div>
+                  <h2>EA Bots</h2>
+                  <p>
+                    Giám sát bot đang hoạt động.
+                  </p>
+                </div>
 
-                let stateText =
-                  isEnabled
-                    ? "RUNNING"
-                    : "PAUSED";
+                <span className="live-badge">
+                  ● LIVE
+                </span>
+              </div>
 
-                let stateClass =
-                  isEnabled
-                    ? "running"
-                    : "paused";
+              <div className="quick-actions">
+                <button
+                  onClick={() => setPage("bots")}
+                >
+                  Quản lý EA Bots →
+                </button>
 
-                // ------------------------------------------------
-                // PENDING
-                // ------------------------------------------------
+                <button
+                  onClick={() => setPage("commands")}
+                >
+                  Xem Commands →
+                </button>
+              </div>
 
-                if (pending) {
-                  if (
-                    command ===
-                    COMMANDS.ENABLE
-                  ) {
-                    stateText =
-                      "ENABLE REQUESTED";
-                  } else if (
-                    command ===
-                    COMMANDS.PAUSE
-                  ) {
-                    stateText =
-                      "PAUSE REQUESTED";
-                  } else {
-                    stateText =
-                      `${command} REQUESTED`;
+              <div className="mini-bot-grid">
+                {botsWithStatus.slice(0, 6).map((bot) => (
+                  <BotMiniCard
+                    key={bot.id}
+                    bot={bot}
+                  />
+                ))}
+              </div>
+            </section>
+          </>
+        )}
+
+        {/* ======================================================
+            EA BOTS
+        ====================================================== */}
+
+        {page === "bots" && (
+          <>
+            <header className="topbar">
+              <div>
+                <div className="eyebrow">
+                  EA MANAGEMENT
+                </div>
+
+                <h1>EA Bots</h1>
+
+                <p>
+                  Quản lý và điều khiển từng EA.
+                </p>
+              </div>
+
+              <button
+                className="refresh"
+                onClick={handleRefresh}
+                disabled={refreshing}
+              >
+                {refreshing
+                  ? "Đang cập nhật..."
+                  : "↻ Làm mới"}
+              </button>
+            </header>
+
+            <section className="panel">
+              <div className="toolbar">
+                <input
+                  className="search-input"
+                  value={botSearch}
+                  onChange={(e) =>
+                    setBotSearch(e.target.value)
                   }
+                  placeholder="🔎 Tìm EA, MT5, broker, server..."
+                />
 
-                  stateClass =
-                    "requested";
-                }
-
-                // ------------------------------------------------
-                // EXECUTED
-                // ------------------------------------------------
-
-                if (
-                  !pending &&
-                  tracked?.status ===
-                    "executed"
-                ) {
-                  if (
-                    tracked.command ===
-                    COMMANDS.ENABLE
-                  ) {
-                    stateText =
-                      "RUNNING";
-
-                    stateClass =
-                      "running";
+                <select
+                  className="filter-select"
+                  value={botFilter}
+                  onChange={(e) =>
+                    setBotFilter(e.target.value)
                   }
+                >
+                  <option value="ALL">
+                    Tất cả trạng thái
+                  </option>
 
-                  if (
-                    tracked.command ===
-                    COMMANDS.PAUSE
-                  ) {
-                    stateText =
-                      "PAUSED";
+                  <option value="online">
+                    Online
+                  </option>
 
-                    stateClass =
-                      "paused";
+                  <option value="warning">
+                    Warning
+                  </option>
+
+                  <option value="paused">
+                    Paused
+                  </option>
+
+                  <option value="offline">
+                    Offline
+                  </option>
+                </select>
+              </div>
+
+              <div className="bot-list">
+                {filteredBots.map((bot) => (
+                  <BotCard
+                    key={bot.id}
+                    bot={bot}
+                    pendingCommands={pendingCommands}
+                    trackedCommands={trackedCommands}
+                    commandLoading={commandLoading}
+                    sendCommand={sendCommand}
+                  />
+                ))}
+              </div>
+
+              {!loading &&
+                filteredBots.length === 0 && (
+                  <div className="empty">
+                    <div className="empty-icon">
+                      ◎
+                    </div>
+
+                    <h3>
+                      Không tìm thấy bot
+                    </h3>
+
+                    <p>
+                      Thử thay đổi bộ lọc hoặc từ khóa.
+                    </p>
+                  </div>
+                )}
+            </section>
+          </>
+        )}
+
+        {/* ======================================================
+            COMMANDS
+        ====================================================== */}
+
+        {page === "commands" && (
+          <>
+            <header className="topbar">
+              <div>
+                <div className="eyebrow">
+                  REMOTE CONTROL
+                </div>
+
+                <h1>Commands</h1>
+
+                <p>
+                  Lịch sử lệnh điều khiển EA.
+                </p>
+              </div>
+
+              <button
+                className="refresh"
+                onClick={handleRefresh}
+                disabled={refreshing}
+              >
+                {refreshing
+                  ? "Đang cập nhật..."
+                  : "↻ Làm mới"}
+              </button>
+            </header>
+
+            <section className="panel">
+              <div className="toolbar">
+                <select
+                  className="filter-select"
+                  value={commandFilter}
+                  onChange={(e) =>
+                    setCommandFilter(e.target.value)
                   }
-                }
+                >
+                  <option value="ALL">
+                    Tất cả
+                  </option>
 
-                return (
-                  <article
-                    className="bot-card"
-                    key={
-                      bot.id
-                    }
-                  >
-                    {/* ========================================
-                        BOT HEADER
-                    ======================================== */}
+                  <option value="PENDING">
+                    Pending
+                  </option>
 
-                    <div className="bot-top">
-                      <div>
-                        <div className="bot-title-row">
-                          <h3>
-                            {bot.ea_name ||
-                              "GIANG QUANT X"}
-                          </h3>
+                  <option value="EXECUTED">
+                    Executed
+                  </option>
+                </select>
+              </div>
 
+              <div className="command-table-wrap">
+                <table className="command-table">
+                  <thead>
+                    <tr>
+                      <th>THỜI GIAN</th>
+                      <th>BOT ID</th>
+                      <th>COMMAND</th>
+                      <th>STATUS</th>
+                      <th>EXECUTED</th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {filteredCommands.map((item) => (
+                      <tr key={item.id}>
+                        <td>
+                          {formatDate(item.created_at)}
+                        </td>
+
+                        <td className="mono">
+                          {item.bot_instance_id}
+                        </td>
+
+                        <td>
                           <span
-                            className={
-                              isOnline
-                                ? "status online"
-                                : "status offline"
-                            }
+                            className={`command-chip ${String(
+                              item.command
+                            ).toLowerCase()}`}
                           >
-                            ●{" "}
-                            {isOnline
-                              ? "ONLINE"
-                              : "OFFLINE"}
+                            {item.command}
                           </span>
-                        </div>
+                        </td>
 
-                        <div className="bot-meta">
-                          V
-                          {bot.ea_version ||
-                            "--"}{" "}
-                          ·{" "}
-                          {bot.symbol ||
-                            "--"}{" "}
-                          ·{" "}
-                          {bot.timeframe ||
-                            "--"}
-                        </div>
-                      </div>
+                        <td>
+                          <span
+                            className={`command-status ${
+                              item.status === "executed"
+                                ? "executed"
+                                : "pending"
+                            }`}
+                          >
+                            {item.status === "executed"
+                              ? "EXECUTED"
+                              : "PENDING"}
+                          </span>
+                        </td>
 
-                      <div
-                        className={`state-pill ${stateClass}`}
-                      >
-                        {stateText}
-                      </div>
-                    </div>
+                        <td>
+                          {item.executed_at
+                            ? formatDate(item.executed_at)
+                            : "--"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
 
-                    {/* ========================================
-                        METRICS
-                    ======================================== */}
+              {!filteredCommands.length && (
+                <div className="empty">
+                  Chưa có command.
+                </div>
+              )}
+            </section>
+          </>
+        )}
 
-                    <div className="metrics">
-                      <Metric
-                        label="MT5 LOGIN"
-                        value={
-                          account?.mt5_login ||
-                          "--"
-                        }
-                      />
+        {/* ======================================================
+            PLACEHOLDER MODULES
+        ====================================================== */}
 
-                      <Metric
-                        label="BROKER"
-                        value={
-                          account?.broker ||
-                          "--"
-                        }
-                      />
+        {(page === "mt5" ||
+          page === "licenses" ||
+          page === "logs") && (
+          <section className="panel module-placeholder">
+            <div className="empty">
+              <div className="empty-icon">◈</div>
 
-                      <Metric
-                        label="SERVER"
-                        value={
-                          account?.server ||
-                          "--"
-                        }
-                      />
+              <h3>
+                {page === "mt5"
+                  ? "MT5 Accounts"
+                  : page === "licenses"
+                    ? "Licenses"
+                    : "Activity Logs"}
+              </h3>
 
-                      <Metric
-                        label="BALANCE"
-                        value={formatMoney(
-                          bot.balance
-                        )}
-                      />
-
-                      <Metric
-                        label="EQUITY"
-                        value={formatMoney(
-                          bot.equity
-                        )}
-                      />
-
-                      <Metric
-                        label="DAILY PNL"
-                        value={formatMoney(
-                          bot.daily_profit
-                        )}
-                      />
-
-                      <Metric
-                        label="DRAWDOWN"
-                        value={`${Number(
-                          bot.drawdown ||
-                            0
-                        ).toFixed(
-                          2
-                        )}%`}
-                      />
-
-                      <Metric
-                        label="LAST SEEN"
-                        value={
-                          bot.last_seen
-                            ? formatDate(
-                                bot.last_seen
-                              )
-                            : "--"
-                        }
-                      />
-                    </div>
-
-                    {/* ========================================
-                        REMOTE STATUS
-                    ======================================== */}
-
-                    <div className="bot-footer">
-                      <div>
-                        Remote:
-
-                        <strong
-                          className={
-                            isEnabled
-                              ? "green-text"
-                              : "red-text"
-                          }
-                        >
-                          {isEnabled
-                            ? " BẬT"
-                            : " TẮT"}
-                        </strong>
-                      </div>
-
-                      <div className="bot-id">
-                        BOT ID:{" "}
-                        {bot.id}
-                      </div>
-                    </div>
-
-                    {/* ========================================
-                        COMMANDS
-                    ======================================== */}
-
-                    <div className="bot-actions">
-                      {!isEnabled ? (
-                        <button
-                          className="btn-enable"
-                          disabled={
-                            commandLoading !==
-                              null ||
-                            pending !==
-                              undefined
-                          }
-                          onClick={() =>
-                            sendCommand(
-                              bot,
-                              COMMANDS.ENABLE
-                            )
-                          }
-                        >
-                          {commandLoading ===
-                          `${bot.id}-ENABLE`
-                            ? "ĐANG GỬI..."
-                            : "BẬT BOT"}
-                        </button>
-                      ) : (
-                        <button
-                          className="btn-pause"
-                          disabled={
-                            commandLoading !==
-                              null ||
-                            pending !==
-                              undefined
-                          }
-                          onClick={() =>
-                            sendCommand(
-                              bot,
-                              COMMANDS.PAUSE
-                            )
-                          }
-                        >
-                          {commandLoading ===
-                          `${bot.id}-PAUSE`
-                            ? "ĐANG GỬI..."
-                            : "TẮT BOT"}
-                        </button>
-                      )}
-
-                      <button
-                        className="btn-close"
-                        disabled={
-                          commandLoading !==
-                            null ||
-                          pending !==
-                            undefined
-                        }
-                        onClick={() =>
-                          sendCommand(
-                            bot,
-                            COMMANDS.CLOSE_ALL
-                          )
-                        }
-                      >
-                        {commandLoading ===
-                        `${bot.id}-CLOSE_ALL`
-                          ? "ĐANG GỬI..."
-                          : "ĐÓNG TẤT CẢ"}
-                      </button>
-
-                      <button
-                        className="btn-kill"
-                        disabled={
-                          commandLoading !==
-                            null ||
-                          pending !==
-                            undefined
-                        }
-                        onClick={() =>
-                          sendCommand(
-                            bot,
-                            COMMANDS.KILL
-                          )
-                        }
-                      >
-                        {commandLoading ===
-                        `${bot.id}-KILL`
-                          ? "ĐANG GỬI..."
-                          : "KILL"}
-                      </button>
-                    </div>
-                  </article>
-                );
-              }
-            )}
-          </div>
-        </section>
+              <p>
+                Module này sẽ được kết nối vào dữ liệu
+                thật ở bước tiếp theo.
+              </p>
+            </div>
+          </section>
+        )}
       </main>
     </div>
   );
 }
 
 // ============================================================
-// LOGIN SCREEN
+// BOT CARD
+// ============================================================
+
+function BotCard({
+  bot,
+  pendingCommands,
+  trackedCommands,
+  commandLoading,
+  sendCommand,
+}) {
+  const account = bot.mt5_accounts;
+  const liveStatus = bot.liveStatus;
+
+  const pending = pendingCommands[bot.id];
+  const tracked = trackedCommands[bot.id];
+
+  const isEnabled = bot.enabled === true;
+
+  let stateText = isEnabled
+    ? "RUNNING"
+    : "PAUSED";
+
+  let stateClass = isEnabled
+    ? "running"
+    : "paused";
+
+  if (pending) {
+    stateClass = "requested";
+
+    if (pending.command === COMMANDS.ENABLE) {
+      stateText = "ENABLE REQUESTED";
+    } else if (pending.command === COMMANDS.PAUSE) {
+      stateText = "PAUSE REQUESTED";
+    } else {
+      stateText = `${pending.command} REQUESTED`;
+    }
+  }
+
+  if (
+    !pending &&
+    tracked?.status === "executed"
+  ) {
+    if (
+      tracked.command === COMMANDS.ENABLE &&
+      isEnabled
+    ) {
+      stateText = "RUNNING";
+      stateClass = "running";
+    }
+
+    if (
+      tracked.command === COMMANDS.PAUSE &&
+      !isEnabled
+    ) {
+      stateText = "PAUSED";
+      stateClass = "paused";
+    }
+  }
+
+  return (
+    <article className="bot-card">
+      <div className="bot-top">
+        <div>
+          <div className="bot-title-row">
+            <h3>
+              {bot.ea_name || "GIANG QUANT X"}
+            </h3>
+
+            <span
+              className={`status ${liveStatus.key}`}
+            >
+              ● {liveStatus.label}
+            </span>
+          </div>
+
+          <div className="bot-meta">
+            V{bot.ea_version || "--"} ·{" "}
+            {bot.symbol || "--"} ·{" "}
+            {bot.timeframe || "--"}
+          </div>
+        </div>
+
+        <div className={`state-pill ${stateClass}`}>
+          {stateText}
+        </div>
+      </div>
+
+      <div className="metrics">
+        <Metric
+          label="MT5 LOGIN"
+          value={account?.mt5_login || "--"}
+        />
+
+        <Metric
+          label="BROKER"
+          value={account?.broker || "--"}
+        />
+
+        <Metric
+          label="SERVER"
+          value={account?.server || "--"}
+        />
+
+        <Metric
+          label="BALANCE"
+          value={formatMoney(bot.balance)}
+        />
+
+        <Metric
+          label="EQUITY"
+          value={formatMoney(bot.equity)}
+        />
+
+        <Metric
+          label="DAILY PNL"
+          value={formatMoney(bot.daily_profit)}
+        />
+
+        <Metric
+          label="DRAWDOWN"
+          value={`${Number(
+            bot.drawdown || 0
+          ).toFixed(2)}%`}
+        />
+
+        <Metric
+          label="HEARTBEAT"
+          value={formatAgo(liveStatus.seconds)}
+        />
+      </div>
+
+      <div className="bot-footer">
+        <div>
+          Remote:
+          <strong
+            className={
+              isEnabled
+                ? "green-text"
+                : "red-text"
+            }
+          >
+            {isEnabled ? " BẬT" : " TẮT"}
+          </strong>
+        </div>
+
+        <div className="bot-id">
+          LAST SEEN: {formatDate(bot.last_seen)}
+        </div>
+      </div>
+
+      <div className="bot-actions">
+        {!isEnabled ? (
+          <button
+            className="btn-enable"
+            disabled={
+              commandLoading !== null ||
+              pending !== undefined
+            }
+            onClick={() =>
+              sendCommand(bot, COMMANDS.ENABLE)
+            }
+          >
+            {commandLoading ===
+            `${bot.id}-ENABLE`
+              ? "ĐANG GỬI..."
+              : "BẬT BOT"}
+          </button>
+        ) : (
+          <button
+            className="btn-pause"
+            disabled={
+              commandLoading !== null ||
+              pending !== undefined
+            }
+            onClick={() =>
+              sendCommand(bot, COMMANDS.PAUSE)
+            }
+          >
+            {commandLoading ===
+            `${bot.id}-PAUSE`
+              ? "ĐANG GỬI..."
+              : "TẮT BOT"}
+          </button>
+        )}
+
+        <button
+          className="btn-close"
+          disabled={
+            commandLoading !== null ||
+            pending !== undefined
+          }
+          onClick={() =>
+            sendCommand(bot, COMMANDS.CLOSE_ALL)
+          }
+        >
+          {commandLoading ===
+          `${bot.id}-CLOSE_ALL`
+            ? "ĐANG GỬI..."
+            : "ĐÓNG TẤT CẢ"}
+        </button>
+
+        <button
+          className="btn-kill"
+          disabled={
+            commandLoading !== null ||
+            pending !== undefined
+          }
+          onClick={() =>
+            sendCommand(bot, COMMANDS.KILL)
+          }
+        >
+          {commandLoading ===
+          `${bot.id}-KILL`
+            ? "ĐANG GỬI..."
+            : "KILL"}
+        </button>
+      </div>
+    </article>
+  );
+}
+
+// ============================================================
+// MINI BOT
+// ============================================================
+
+function BotMiniCard({ bot }) {
+  const account = bot.mt5_accounts;
+
+  return (
+    <div className="mini-bot-card">
+      <div className="mini-bot-header">
+        <strong>
+          {bot.ea_name || "GIANG QUANT X"}
+        </strong>
+
+        <span className={`status ${bot.liveStatus.key}`}>
+          ● {bot.liveStatus.label}
+        </span>
+      </div>
+
+      <div className="mini-bot-meta">
+        MT5 {account?.mt5_login || "--"}
+      </div>
+
+      <div className="mini-bot-numbers">
+        <span>
+          Balance
+          <b>{formatMoney(bot.balance)}</b>
+        </span>
+
+        <span>
+          Equity
+          <b>{formatMoney(bot.equity)}</b>
+        </span>
+
+        <span>
+          DD
+          <b>
+            {Number(
+              bot.drawdown || 0
+            ).toFixed(2)}%
+          </b>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
+// STAT CARD
+// ============================================================
+
+function StatCard({
+  label,
+  value,
+  note,
+  className = "",
+  color,
+}) {
+  return (
+    <div className="stat-card">
+      <span>{label}</span>
+
+      <strong
+        className={className}
+        style={color ? { color } : undefined}
+      >
+        {value}
+      </strong>
+
+      <small>{note}</small>
+    </div>
+  );
+}
+
+// ============================================================
+// METRIC
+// ============================================================
+
+function Metric({ label, value }) {
+  return (
+    <div className="metric">
+      <span>{label}</span>
+      <strong>{value ?? "--"}</strong>
+    </div>
+  );
+}
+
+// ============================================================
+// LOGIN
 // ============================================================
 
 function LoginScreen() {
-  const [email, setEmail] =
-    useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
-  const [password, setPassword] =
-    useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const [loading, setLoading] =
-    useState(false);
-
-  const [error, setError] =
-    useState("");
-
-  async function handleLogin(
-    event
-  ) {
+  async function handleLogin(event) {
     event.preventDefault();
 
     if (!supabase) {
-      setError(
-        "Supabase chưa được cấu hình."
-      );
-
+      setError("Supabase chưa được cấu hình.");
       return;
     }
 
@@ -1389,9 +1387,7 @@ function LoginScreen() {
     setError("");
 
     try {
-      const {
-        error: loginError,
-      } =
+      const { error: loginError } =
         await signIn(
           email.trim(),
           password
@@ -1401,10 +1397,7 @@ function LoginScreen() {
         throw loginError;
       }
     } catch (err) {
-      console.error(
-        "LOGIN ERROR:",
-        err
-      );
+      console.error("LOGIN ERROR:", err);
 
       setError(
         "Email hoặc mật khẩu không chính xác."
@@ -1417,9 +1410,7 @@ function LoginScreen() {
   return (
     <div className="login-page">
       <div className="login-card">
-        <div className="login-logo">
-          GQ
-        </div>
+        <div className="login-logo">GQ</div>
 
         <div className="login-title">
           GIANG QUANT
@@ -1429,45 +1420,33 @@ function LoginScreen() {
           CONTROL CENTER
         </div>
 
-        <h2>
-          Đăng nhập quản trị
-        </h2>
+        <h2>Đăng nhập quản trị</h2>
 
         <p>
           Khu vực quản lý EA MT5.
         </p>
 
-        <form
-          onSubmit={handleLogin}
-        >
-          <label>
-            Email
-          </label>
+        <form onSubmit={handleLogin}>
+          <label>Email</label>
 
           <input
             type="email"
             value={email}
-            onChange={(event) =>
-              setEmail(
-                event.target.value
-              )
+            onChange={(e) =>
+              setEmail(e.target.value)
             }
             placeholder="Email quản trị"
             autoComplete="username"
             required
           />
 
-          <label>
-            Mật khẩu
-          </label>
+          <label>Mật khẩu</label>
 
           <input
             type="password"
             value={password}
-            onChange={(event) =>
-              setPassword(
-                event.target.value
-              )
+            onChange={(e) =>
+              setPassword(e.target.value)
             }
             placeholder="••••••••"
             autoComplete="current-password"
@@ -1493,63 +1472,4 @@ function LoginScreen() {
       </div>
     </div>
   );
-}
-
-// ============================================================
-// METRIC
-// ============================================================
-
-function Metric({
-  label,
-  value,
-}) {
-  return (
-    <div className="metric">
-      <span>{label}</span>
-
-      <strong>
-        {value ?? "--"}
-      </strong>
-    </div>
-  );
-}
-
-// ============================================================
-// MONEY
-// ============================================================
-
-function formatMoney(value) {
-  return Number(
-    value || 0
-  ).toLocaleString(
-    "en-US",
-    {
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }
-  );
-}
-
-// ============================================================
-// DATE
-// ============================================================
-
-function formatDate(value) {
-  try {
-    return new Date(
-      value
-    ).toLocaleString(
-      "vi-VN",
-      {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
-        day: "2-digit",
-        month: "2-digit",
-        year: "numeric",
-      }
-    );
-  } catch {
-    return "--";
-  }
 }

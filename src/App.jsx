@@ -1,5 +1,19 @@
-import { useEffect, useMemo, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+
 import { supabase } from "./supabase";
+
+import {
+  signIn,
+  signOut,
+} from "./auth";
+
+// ============================================================
+// COMMANDS
+// ============================================================
 
 const COMMANDS = {
   ENABLE: "ENABLE",
@@ -15,30 +29,144 @@ const COMMAND_LABELS = {
   KILL: "KILL",
 };
 
+// ============================================================
+// APP
+// ============================================================
+
 export default function App() {
+  // ==========================================================
+  // AUTH
+  // ==========================================================
+
+  const [session, setSession] =
+    useState(null);
+
+  const [checkingAuth, setCheckingAuth] =
+    useState(true);
+
+  // ==========================================================
+  // BOT STATE
+  // ==========================================================
+
   const [bots, setBots] = useState([]);
-  const [pendingCommands, setPendingCommands] = useState({});
 
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [commandLoading, setCommandLoading] = useState(null);
+  const [
+    pendingCommands,
+    setPendingCommands,
+  ] = useState({});
 
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
+  const [
+    lastCommandByBot,
+    setLastCommandByBot,
+  ] = useState({});
 
-  // Lưu command vừa gửi để xác định khi nào đã được EA xác nhận
-  const [lastCommandByBot, setLastCommandByBot] =
-    useState({});
+  // ==========================================================
+  // UI STATE
+  // ==========================================================
 
-  // ============================================================
-  // LOAD BOT + COMMAND
-  // ============================================================
+  const [loading, setLoading] =
+    useState(true);
 
-  async function loadBots(showLoading = false) {
+  const [refreshing, setRefreshing] =
+    useState(false);
+
+  const [
+    commandLoading,
+    setCommandLoading,
+  ] = useState(null);
+
+  const [error, setError] =
+    useState("");
+
+  const [message, setMessage] =
+    useState("");
+
+  // ==========================================================
+  // AUTH CHECK
+  // ==========================================================
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function checkAuth() {
+      try {
+        if (!supabase) {
+          if (mounted) {
+            setCheckingAuth(false);
+          }
+
+          return;
+        }
+
+        const {
+          data: {
+            session: currentSession,
+          },
+          error: sessionError,
+        } = await supabase.auth.getSession();
+
+        if (sessionError) {
+          throw sessionError;
+        }
+
+        if (mounted) {
+          setSession(currentSession);
+        }
+      } catch (err) {
+        console.error(
+          "AUTH SESSION ERROR:",
+          err
+        );
+
+        if (mounted) {
+          setSession(null);
+        }
+      } finally {
+        if (mounted) {
+          setCheckingAuth(false);
+        }
+      }
+    }
+
+    checkAuth();
+
+    if (!supabase) {
+      return () => {
+        mounted = false;
+      };
+    }
+
+    const {
+      data: {
+        subscription,
+      },
+    } =
+      supabase.auth.onAuthStateChange(
+        (_event, newSession) => {
+          if (mounted) {
+            setSession(newSession);
+          }
+        }
+      );
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // ==========================================================
+  // LOAD BOTS
+  // ==========================================================
+
+  async function loadBots(
+    showLoading = false
+  ) {
     if (!supabase) {
       setError(
-        "Supabase chưa được cấu hình. Kiểm tra VITE_SUPABASE_URL và VITE_SUPABASE_PUBLISHABLE_KEY."
+        "Supabase chưa được cấu hình. Kiểm tra Environment Variables."
       );
+
       setLoading(false);
       return;
     }
@@ -95,7 +223,7 @@ export default function App() {
       setBots(safeBots);
 
       // ========================================================
-      // LOAD PENDING COMMANDS
+      // LOAD COMMAND HISTORY
       // ========================================================
 
       const {
@@ -113,189 +241,221 @@ export default function App() {
         `)
         .order("created_at", {
           ascending: false,
-        });
+        })
+        .limit(500);
 
       if (commandError) {
         throw commandError;
       }
 
-      // --------------------------------------------------------
-      // Chỉ lấy pending command mới nhất cho mỗi bot
-      // --------------------------------------------------------
+      const commands =
+        commandData || [];
+
+      // ========================================================
+      // PENDING MAP
+      // ========================================================
 
       const pendingMap = {};
 
-      for (const command of commandData || []) {
+      for (const command of commands) {
         if (
-          command.status === "pending" &&
-          !pendingMap[command.bot_instance_id]
+          command.status ===
+            "pending" &&
+          !pendingMap[
+            command.bot_instance_id
+          ]
         ) {
-          pendingMap[command.bot_instance_id] =
-            command;
+          pendingMap[
+            command.bot_instance_id
+          ] = command;
         }
       }
 
-      setPendingCommands(pendingMap);
+      setPendingCommands(
+        pendingMap
+      );
 
       // ========================================================
       // COMMAND FEEDBACK
       // ========================================================
 
-      const nextLastCommands = {
+      const nextTracked = {
         ...lastCommandByBot,
       };
 
       for (const bot of safeBots) {
-        const botPending =
+        const tracked =
+          nextTracked[bot.id];
+
+        const pending =
           pendingMap[bot.id];
 
-        const tracked =
-          nextLastCommands[bot.id];
-
         // ------------------------------------------------------
-        // 1. Vẫn đang chờ
+        // STILL PENDING
         // ------------------------------------------------------
 
-        if (botPending) {
-          if (
-            tracked &&
-            tracked.command ===
-              botPending.command
-          ) {
-            nextLastCommands[bot.id] = {
-              ...tracked,
-              commandId:
-                botPending.id,
-              status: "pending",
-            };
-          }
+        if (pending) {
+          nextTracked[bot.id] = {
+            command:
+              pending.command,
+            commandId:
+              pending.id,
+            status: "pending",
+          };
 
           continue;
         }
 
         // ------------------------------------------------------
-        // 2. Không còn pending
-        //    Kiểm tra command gần nhất để xác nhận
+        // COMMAND EXECUTED
         // ------------------------------------------------------
 
-        if (tracked?.commandId) {
-          const matchingCommand =
-            (commandData || []).find(
-              (item) =>
-                item.id ===
-                tracked.commandId
-            );
+        if (!tracked?.commandId) {
+          continue;
+        }
+
+        const matchingCommand =
+          commands.find(
+            (item) =>
+              item.id ===
+              tracked.commandId
+          );
+
+        if (!matchingCommand) {
+          continue;
+        }
+
+        if (
+          matchingCommand.status !==
+          "executed"
+        ) {
+          continue;
+        }
+
+        const command =
+          String(
+            matchingCommand.command ||
+              ""
+          ).toUpperCase();
+
+        let confirmed =
+          false;
+
+        if (
+          command ===
+          COMMANDS.ENABLE
+        ) {
+          confirmed =
+            bot.enabled === true;
+        }
+
+        if (
+          command ===
+          COMMANDS.PAUSE
+        ) {
+          confirmed =
+            bot.enabled === false;
+        }
+
+        if (
+          command ===
+            COMMANDS.CLOSE_ALL ||
+          command ===
+            COMMANDS.KILL
+        ) {
+          confirmed = true;
+        }
+
+        if (
+          confirmed &&
+          tracked.status !==
+            "executed"
+        ) {
+          let successMessage =
+            "✅ Lệnh đã được EA xác nhận.";
 
           if (
-            matchingCommand &&
-            matchingCommand.status ===
-              "executed"
+            command ===
+            COMMANDS.ENABLE
           ) {
-            const command =
-              String(
-                matchingCommand.command
-              ).toUpperCase();
-
-            let success = false;
-
-            // ENABLE thành công
-            if (
-              command ===
-                COMMANDS.ENABLE ||
-              command === "RESUME"
-            ) {
-              success =
-                bot.enabled === true;
-            }
-
-            // PAUSE thành công
-            if (
-              command ===
-                COMMANDS.PAUSE ||
-              command ===
-                "DISABLE"
-            ) {
-              success =
-                bot.enabled === false;
-            }
-
-            // CLOSE_ALL / KILL
-            // chỉ xác nhận command đã executed
-            if (
-              command ===
-                COMMANDS.CLOSE_ALL ||
-              command === COMMANDS.KILL
-            ) {
-              success = true;
-            }
-
-            if (
-              success &&
-              tracked.status !==
-                "executed"
-            ) {
-              const successLabel =
-                command ===
-                COMMANDS.ENABLE
-                  ? "✅ EA đã BẬT thành công."
-                  : command ===
-                      COMMANDS.PAUSE
-                    ? "✅ EA đã TẮT và chuyển sang PAUSED."
-                    : command ===
-                        COMMANDS.CLOSE_ALL
-                      ? "✅ Đã đóng tất cả lệnh."
-                      : "✅ EA đã nhận lệnh KILL.";
-
-              setMessage(
-                successLabel
-              );
-
-              nextLastCommands[
-                bot.id
-              ] = {
-                ...tracked,
-                status: "executed",
-              };
-
-              // Tự xóa message sau 4 giây
-              setTimeout(() => {
-                setMessage((current) =>
-                  current ===
-                  successLabel
-                    ? ""
-                    : current
-                );
-              }, 4000);
-            }
+            successMessage =
+              "✅ EA đã BẬT thành công.";
           }
+
+          if (
+            command ===
+            COMMANDS.PAUSE
+          ) {
+            successMessage =
+              "✅ EA đã TẮT và chuyển sang PAUSED.";
+          }
+
+          if (
+            command ===
+            COMMANDS.CLOSE_ALL
+          ) {
+            successMessage =
+              "✅ Đã đóng tất cả lệnh.";
+          }
+
+          if (
+            command ===
+            COMMANDS.KILL
+          ) {
+            successMessage =
+              "✅ EA đã nhận lệnh KILL.";
+          }
+
+          setMessage(
+            successMessage
+          );
+
+          nextTracked[bot.id] = {
+            ...tracked,
+            command,
+            status:
+              "executed",
+          };
+
+          setTimeout(() => {
+            setMessage(
+              (current) =>
+                current ===
+                successMessage
+                  ? ""
+                  : current
+            );
+          }, 4000);
         }
       }
 
       setLastCommandByBot(
-        nextLastCommands
+        nextTracked
       );
 
       // ========================================================
-      // Nếu không còn pending và không còn trạng thái
-      // chờ nào -> xóa message "đang chờ"
+      // KHÔNG CÒN PENDING
       // ========================================================
 
       const hasPending =
-        Object.keys(pendingMap).length >
-        0;
+        Object.keys(
+          pendingMap
+        ).length > 0;
 
       if (!hasPending) {
-        setMessage((current) => {
-          if (
-            current.includes(
-              "Đang chờ EA xác nhận"
-            )
-          ) {
-            return "";
-          }
+        setMessage(
+          (current) => {
+            if (
+              current.includes(
+                "Đang chờ EA xác nhận"
+              )
+            ) {
+              return "";
+            }
 
-          return current;
-        });
+            return current;
+          }
+        );
       }
     } catch (err) {
       console.error(
@@ -305,19 +465,21 @@ export default function App() {
 
       setError(
         err?.message ||
-          "Không thể tải dữ liệu từ Supabase."
+          "Không thể tải dữ liệu."
       );
     } finally {
       setLoading(false);
     }
   }
 
-  // ============================================================
+  // ==========================================================
   // REFRESH
-  // ============================================================
+  // ==========================================================
 
   async function handleRefresh() {
-    if (refreshing) return;
+    if (refreshing) {
+      return;
+    }
 
     setRefreshing(true);
 
@@ -328,9 +490,9 @@ export default function App() {
     }
   }
 
-  // ============================================================
+  // ==========================================================
   // SEND COMMAND
-  // ============================================================
+  // ==========================================================
 
   async function sendCommand(
     bot,
@@ -347,17 +509,22 @@ export default function App() {
     setMessage("");
 
     // ----------------------------------------------------------
-    // Confirm lệnh nguy hiểm
+    // DANGEROUS COMMAND CONFIRM
     // ----------------------------------------------------------
 
     if (
       command ===
         COMMANDS.CLOSE_ALL ||
-      command === COMMANDS.KILL
+      command ===
+        COMMANDS.KILL
     ) {
       const confirmed =
         window.confirm(
-          `Bạn có chắc muốn ${COMMAND_LABELS[command]} cho ${
+          `Bạn có chắc muốn ${
+            COMMAND_LABELS[
+              command
+            ]
+          } cho ${
             bot.ea_name ||
             "GIANG QUANT X"
           }?`
@@ -373,9 +540,9 @@ export default function App() {
     );
 
     try {
-      // ========================================================
-      // KIỂM TRA COMMAND PENDING
-      // ========================================================
+      // --------------------------------------------------------
+      // CHECK PENDING
+      // --------------------------------------------------------
 
       const {
         data: pending,
@@ -393,9 +560,12 @@ export default function App() {
           "status",
           "pending"
         )
-        .order("created_at", {
-          ascending: false,
-        })
+        .order(
+          "created_at",
+          {
+            ascending: false,
+          }
+        )
         .limit(1);
 
       if (pendingError) {
@@ -413,21 +583,25 @@ export default function App() {
         return;
       }
 
-      // ========================================================
+      // --------------------------------------------------------
       // INSERT COMMAND
-      // ========================================================
+      // --------------------------------------------------------
 
       const {
-        data: insertedCommand,
+        data:
+          insertedCommand,
         error: insertError,
       } = await supabase
         .from("bot_commands")
         .insert({
           bot_instance_id:
             bot.id,
+
           command,
+
           status:
             "pending",
+
           message:
             `Dashboard command: ${command}`,
         })
@@ -438,33 +612,35 @@ export default function App() {
         throw insertError;
       }
 
-      // ========================================================
-      // LƯU COMMAND ĐANG THEO DÕI
-      // ========================================================
+      // --------------------------------------------------------
+      // TRACK COMMAND
+      // --------------------------------------------------------
 
       setLastCommandByBot(
         (current) => ({
           ...current,
+
           [bot.id]: {
             command,
             commandId:
               insertedCommand?.id,
-            status: "pending",
+            status:
+              "pending",
           },
         })
       );
 
-      // ========================================================
-      // Hiện trạng thái chờ
-      // ========================================================
+      // --------------------------------------------------------
+      // SHOW WAITING
+      // --------------------------------------------------------
 
       setMessage(
         `🟡 ${COMMAND_LABELS[command]} đã được gửi. Đang chờ EA xác nhận...`
       );
 
-      // ========================================================
-      // LOAD LẠI NGAY
-      // ========================================================
+      // --------------------------------------------------------
+      // REFRESH
+      // --------------------------------------------------------
 
       await loadBots(false);
     } catch (err) {
@@ -482,11 +658,15 @@ export default function App() {
     }
   }
 
-  // ============================================================
-  // INITIAL LOAD + AUTO REFRESH
-  // ============================================================
+  // ==========================================================
+  // AUTO REFRESH
+  // ==========================================================
 
   useEffect(() => {
+    if (!session) {
+      return;
+    }
+
     loadBots(true);
 
     const timer =
@@ -497,11 +677,11 @@ export default function App() {
     return () => {
       clearInterval(timer);
     };
-  }, []);
+  }, [session]);
 
-  // ============================================================
+  // ==========================================================
   // STATISTICS
-  // ============================================================
+  // ==========================================================
 
   const totalBots =
     bots.length;
@@ -536,7 +716,7 @@ export default function App() {
         bots.filter(
           (bot) =>
             bot.enabled ===
-            false &&
+              false &&
             String(
               bot.status
             ).toLowerCase() ===
@@ -554,9 +734,39 @@ export default function App() {
         "online"
     ).length;
 
-  // ============================================================
-  // RENDER
-  // ============================================================
+  // ==========================================================
+  // AUTH LOADING
+  // ==========================================================
+
+  if (checkingAuth) {
+    return (
+      <div className="loading-screen">
+        <div>
+          <div className="brand-mark">
+            GQ
+          </div>
+
+          <p>
+            Đang kiểm tra đăng nhập...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ==========================================================
+  // LOGIN
+  // ==========================================================
+
+  if (!session) {
+    return (
+      <LoginScreen />
+    );
+  }
+
+  // ==========================================================
+  // DASHBOARD
+  // ==========================================================
 
   return (
     <div className="app-shell">
@@ -608,7 +818,18 @@ export default function App() {
         </nav>
 
         <div className="sidebar-footer">
-          Production · Singapore
+          <div>
+            Production · Singapore
+          </div>
+
+          <button
+            className="logout-button"
+            onClick={async () => {
+              await signOut();
+            }}
+          >
+            Đăng xuất
+          </button>
         </div>
       </aside>
 
@@ -823,12 +1044,10 @@ export default function App() {
                     : "paused";
 
                 // ------------------------------------------------
-                // Pending state
+                // PENDING
                 // ------------------------------------------------
 
-                if (
-                  pending
-                ) {
+                if (pending) {
                   if (
                     command ===
                     COMMANDS.ENABLE
@@ -851,7 +1070,7 @@ export default function App() {
                 }
 
                 // ------------------------------------------------
-                // Executed recent state
+                // EXECUTED
                 // ------------------------------------------------
 
                 if (
@@ -865,6 +1084,7 @@ export default function App() {
                   ) {
                     stateText =
                       "RUNNING";
+
                     stateClass =
                       "running";
                   }
@@ -875,6 +1095,7 @@ export default function App() {
                   ) {
                     stateText =
                       "PAUSED";
+
                     stateClass =
                       "paused";
                   }
@@ -887,9 +1108,9 @@ export default function App() {
                       bot.id
                     }
                   >
-                    {/* ==========================================
-                        HEADER
-                    ========================================== */}
+                    {/* ========================================
+                        BOT HEADER
+                    ======================================== */}
 
                     <div className="bot-top">
                       <div>
@@ -933,9 +1154,9 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* ==========================================
+                    {/* ========================================
                         METRICS
-                    ========================================== */}
+                    ======================================== */}
 
                     <div className="metrics">
                       <Metric
@@ -1005,9 +1226,9 @@ export default function App() {
                       />
                     </div>
 
-                    {/* ==========================================
+                    {/* ========================================
                         REMOTE STATUS
-                    ========================================== */}
+                    ======================================== */}
 
                     <div className="bot-footer">
                       <div>
@@ -1032,9 +1253,9 @@ export default function App() {
                       </div>
                     </div>
 
-                    {/* ==========================================
-                        ACTIONS
-                    ========================================== */}
+                    {/* ========================================
+                        COMMANDS
+                    ======================================== */}
 
                     <div className="bot-actions">
                       {!isEnabled ? (
@@ -1135,6 +1356,146 @@ export default function App() {
 }
 
 // ============================================================
+// LOGIN SCREEN
+// ============================================================
+
+function LoginScreen() {
+  const [email, setEmail] =
+    useState("");
+
+  const [password, setPassword] =
+    useState("");
+
+  const [loading, setLoading] =
+    useState(false);
+
+  const [error, setError] =
+    useState("");
+
+  async function handleLogin(
+    event
+  ) {
+    event.preventDefault();
+
+    if (!supabase) {
+      setError(
+        "Supabase chưa được cấu hình."
+      );
+
+      return;
+    }
+
+    setLoading(true);
+    setError("");
+
+    try {
+      const {
+        error: loginError,
+      } =
+        await signIn(
+          email.trim(),
+          password
+        );
+
+      if (loginError) {
+        throw loginError;
+      }
+    } catch (err) {
+      console.error(
+        "LOGIN ERROR:",
+        err
+      );
+
+      setError(
+        "Email hoặc mật khẩu không chính xác."
+      );
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="login-page">
+      <div className="login-card">
+        <div className="login-logo">
+          GQ
+        </div>
+
+        <div className="login-title">
+          GIANG QUANT
+        </div>
+
+        <div className="login-subtitle">
+          CONTROL CENTER
+        </div>
+
+        <h2>
+          Đăng nhập quản trị
+        </h2>
+
+        <p>
+          Khu vực quản lý EA MT5.
+        </p>
+
+        <form
+          onSubmit={handleLogin}
+        >
+          <label>
+            Email
+          </label>
+
+          <input
+            type="email"
+            value={email}
+            onChange={(event) =>
+              setEmail(
+                event.target.value
+              )
+            }
+            placeholder="Email quản trị"
+            autoComplete="username"
+            required
+          />
+
+          <label>
+            Mật khẩu
+          </label>
+
+          <input
+            type="password"
+            value={password}
+            onChange={(event) =>
+              setPassword(
+                event.target.value
+              )
+            }
+            placeholder="••••••••"
+            autoComplete="current-password"
+            required
+          />
+
+          {error && (
+            <div className="login-error">
+              {error}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            className="login-button"
+            disabled={loading}
+          >
+            {loading
+              ? "ĐANG ĐĂNG NHẬP..."
+              : "ĐĂNG NHẬP"}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================
 // METRIC
 // ============================================================
 
@@ -1145,6 +1506,7 @@ function Metric({
   return (
     <div className="metric">
       <span>{label}</span>
+
       <strong>
         {value ?? "--"}
       </strong>

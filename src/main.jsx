@@ -4,6 +4,7 @@ import App from "./App.jsx";
 import CustomerManager from "./CustomerManager.jsx";
 import MT5Manager from "./MT5Manager.jsx";
 import LicenseLinkManager from "./LicenseLinkManager.jsx";
+import CustomerAwareDashboard from "./CustomerAwareDashboard.jsx";
 import "./style.css";
 import { supabase } from "./supabase";
 
@@ -58,6 +59,8 @@ function RealtimeApp() {
   return (
     <>
       <App key={realtimeTick} />
+
+      <CustomerAwareDashboard refreshToken={realtimeTick} />
 
       {session && (
         <>

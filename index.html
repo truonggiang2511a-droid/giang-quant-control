@@ -27,6 +27,43 @@
           });
         });
       }
+
+      // Mobile-only UI helper: nút Home chỉ kích hoạt Dashboard hiện có,
+      // không thay đổi business logic, database, realtime hay remote commands.
+      window.addEventListener("load", () => {
+        const setupMobileHome = () => {
+          if (window.innerWidth > 900) return;
+          if (!document.querySelector(".app-shell")) return;
+          if (document.querySelector(".mobile-home-button")) return;
+
+          const homeButton = document.createElement("button");
+          homeButton.type = "button";
+          homeButton.className = "mobile-home-button";
+          homeButton.setAttribute("aria-label", "Về trang chủ");
+          homeButton.setAttribute("title", "Về trang chủ");
+          homeButton.textContent = "⌂";
+
+          homeButton.addEventListener("click", () => {
+            const dashboardButton = Array.from(
+              document.querySelectorAll(".nav-item")
+            ).find((button) =>
+              (button.textContent || "").toLowerCase().includes("dashboard")
+            );
+
+            dashboardButton?.click();
+            window.scrollTo({ top: 0, behavior: "smooth" });
+          });
+
+          document.body.appendChild(homeButton);
+        };
+
+        setupMobileHome();
+
+        const observer = new MutationObserver(setupMobileHome);
+        observer.observe(document.body, { childList: true, subtree: true });
+
+        setTimeout(() => observer.disconnect(), 15000);
+      });
     </script>
   </body>
 </html>

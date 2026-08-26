@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
 import CustomerManager from "./CustomerManager.jsx";
+import Mt5Manager from "./Mt5Manager.jsx";
 import "./style.css";
 import { supabase } from "./supabase";
 
@@ -9,6 +10,7 @@ function RealtimeApp() {
   const [realtimeTick, setRealtimeTick] = useState(0);
   const [session, setSession] = useState(null);
   const [customerOpen, setCustomerOpen] = useState(false);
+  const [mt5Open, setMt5Open] = useState(false);
 
   useEffect(() => {
     if (!supabase) {
@@ -89,14 +91,28 @@ function RealtimeApp() {
             type="button"
             onClick={() => setCustomerOpen(true)}
             style={styles.customerButton}
-            title="Quản lý khách hàng"
+            title="Quản lý khách hàng, License và EA"
           >
             👤 KHÁCH HÀNG
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setMt5Open(true)}
+            style={styles.mt5Button}
+            title="Quản lý tài khoản MT5 và bật/tắt EA"
+          >
+            💻 MT5 / EA
           </button>
 
           <CustomerManager
             open={customerOpen}
             onClose={() => setCustomerOpen(false)}
+          />
+
+          <Mt5Manager
+            open={mt5Open}
+            onClose={() => setMt5Open(false)}
           />
         </>
       )}
@@ -104,22 +120,33 @@ function RealtimeApp() {
   );
 }
 
+const baseFloatingButton = {
+  position: "fixed",
+  right: 24,
+  zIndex: 9000,
+  borderRadius: 14,
+  padding: "12px 16px",
+  color: "#fff",
+  fontWeight: 800,
+  fontSize: 12,
+  letterSpacing: 0.4,
+  cursor: "pointer",
+};
+
 const styles = {
   customerButton: {
-    position: "fixed",
-    right: 24,
-    bottom: 24,
-    zIndex: 9000,
+    ...baseFloatingButton,
+    bottom: 80,
     border: "1px solid rgba(59,130,246,.35)",
-    borderRadius: 14,
-    padding: "12px 16px",
     background: "#2563eb",
-    color: "#fff",
-    fontWeight: 800,
-    fontSize: 12,
-    letterSpacing: 0.4,
     boxShadow: "0 12px 35px rgba(37,99,235,.28)",
-    cursor: "pointer",
+  },
+  mt5Button: {
+    ...baseFloatingButton,
+    bottom: 24,
+    border: "1px solid rgba(16,185,129,.35)",
+    background: "#059669",
+    boxShadow: "0 12px 35px rgba(5,150,105,.22)",
   },
 };
 

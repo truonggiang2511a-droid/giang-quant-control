@@ -109,14 +109,20 @@ function MT5Manager({ open, onClose }) {
     try {
       if (!form.customer_id) throw new Error("Hãy chọn khách hàng.");
       if (!form.login.trim()) throw new Error("Hãy nhập MT5 Login.");
-      if (!form.broker.trim()) throw new Error("Hãy nhập Broker.");
-      if (!form.server.trim()) throw new Error("Hãy nhập Server.");
+
+      // Broker / Server là tùy chọn. NULL/rỗng được phép lưu.
       const payload = {
-        customer_id: form.customer_id, login: form.login.trim(), mt5_login: form.login.trim(),
-        broker: form.broker.trim(), server: form.server.trim(),
-        account_type: form.account_type.trim() || null, symbol: form.symbol.trim() || null,
-        status: form.status || "active", updated_at: new Date().toISOString(),
+        customer_id: form.customer_id,
+        login: form.login.trim(),
+        mt5_login: form.login.trim(),
+        broker: form.broker.trim() || null,
+        server: form.server.trim() || null,
+        account_type: form.account_type.trim() || null,
+        symbol: form.symbol.trim() || null,
+        status: form.status || "active",
+        updated_at: new Date().toISOString(),
       };
+
       if (editingId) {
         const { error: updateError } = await supabase.from("mt5_accounts").update(payload).eq("id", editingId);
         if (updateError) throw updateError;
@@ -195,8 +201,8 @@ function MT5Manager({ open, onClose }) {
               {customers.map((c) => <option key={c.id} value={c.id}>{c.full_name}</option>)}
             </select>
             <input style={inputStyle} placeholder="MT5 Login *" value={form.login} onChange={(e) => setForm((v) => ({ ...v, login: e.target.value }))} />
-            <input style={inputStyle} placeholder="Broker *" value={form.broker} onChange={(e) => setForm((v) => ({ ...v, broker: e.target.value }))} />
-            <input style={inputStyle} placeholder="Server *" value={form.server} onChange={(e) => setForm((v) => ({ ...v, server: e.target.value }))} />
+            <input style={inputStyle} placeholder="Broker (không bắt buộc)" value={form.broker} onChange={(e) => setForm((v) => ({ ...v, broker: e.target.value }))} />
+            <input style={inputStyle} placeholder="Server (không bắt buộc)" value={form.server} onChange={(e) => setForm((v) => ({ ...v, server: e.target.value }))} />
             <input style={inputStyle} placeholder="Account Type" value={form.account_type} onChange={(e) => setForm((v) => ({ ...v, account_type: e.target.value }))} />
             <input style={inputStyle} placeholder="Symbol" value={form.symbol} onChange={(e) => setForm((v) => ({ ...v, symbol: e.target.value }))} />
             <select value={form.status} onChange={(e) => setForm((v) => ({ ...v, status: e.target.value }))} style={inputStyle}>
@@ -206,7 +212,7 @@ function MT5Manager({ open, onClose }) {
               <button type="submit" disabled={saving} style={{ flex: 1, padding: "12px 14px", border: 0, borderRadius: 12, background: "#2563eb", color: "white", fontWeight: 800 }}>{saving ? "ĐANG LƯU..." : editingId ? "LƯU THAY ĐỔI" : "THÊM MT5"}</button>
               {editingId && <button type="button" onClick={cancelEdit} style={{ padding: "12px 14px", borderRadius: 12, border: "1px solid rgba(148,163,184,.2)", background: "transparent", color: "#e5e7eb", fontWeight: 700 }}>HỦY</button>}
             </div>
-            <div style={{ marginTop: 14, fontSize: 11, lineHeight: 1.5, opacity: 0.58 }}>Broker và Server vẫn được lưu vì EA/API dùng chúng để xác thực tài khoản. Không có nút quản lý Broker riêng.</div>
+            <div style={{ marginTop: 14, fontSize: 11, lineHeight: 1.5, opacity: 0.58 }}>Broker và Server là tùy chọn. Để trống sẽ lưu NULL và API sẽ bỏ qua kiểm tra hai trường này.</div>
           </form>
 
           <div style={{ ...cardStyle, padding: 18, minWidth: 0, minHeight: 0, color: "#e5e7eb", display: "flex", flexDirection: "column", overflow: "hidden" }}>

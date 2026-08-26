@@ -1,10 +1,6 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "./supabase";
 
-const HIDDEN_STYLE = {
-  display: "none",
-};
-
 function normalize(value) {
   return String(value || "")
     .trim()
@@ -46,7 +42,6 @@ export default function CustomerAwareDashboard({ refreshToken = 0 }) {
   const [customers, setCustomers] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [customerSearch, setCustomerSearch] = useState("");
-  const [ready, setReady] = useState(false);
 
   const accountMap = useMemo(() => {
     const map = new Map();
@@ -96,10 +91,8 @@ export default function CustomerAwareDashboard({ refreshToken = 0 }) {
 
       setCustomers(customerResult.data || []);
       setAccounts(accountResult.data || []);
-      setReady(true);
     } catch (error) {
       console.error("[GQX] CUSTOMER CONTEXT LOAD ERROR:", error);
-      setReady(false);
     }
   }
 
@@ -198,7 +191,7 @@ export default function CustomerAwareDashboard({ refreshToken = 0 }) {
       }
 
       const searchInput = document.querySelector(
-        ".search-input"
+        ".search-input:not(.gqx-customer-search)"
       );
 
       if (searchInput && !searchInput.dataset.gqxEnhanced) {
@@ -239,7 +232,7 @@ export default function CustomerAwareDashboard({ refreshToken = 0 }) {
         visibleInput.value = customerSearch;
       }
 
-      if (!visibleInput) return;
+      if (!visibleInput || !searchInput) return;
 
       const query = normalize(customerSearch);
       const matchingCustomer = query
@@ -256,8 +249,6 @@ export default function CustomerAwareDashboard({ refreshToken = 0 }) {
         : null;
 
       if (matchingCustomer) {
-        // Dashboard's native search cannot search the customer relation.
-        // Keep its internal search empty and filter bot cards ourselves by customer_id.
         if ((searchInput.value || "") !== "") {
           setNativeInputValue(searchInput, "");
         }
@@ -296,7 +287,7 @@ export default function CustomerAwareDashboard({ refreshToken = 0 }) {
       cancelAnimationFrame(raf);
       observer.disconnect();
     };
-  }, [accountMap, customers, customerSearch, ready]);
+  }, [accountMap, customers, customerSearch]);
 
   return null;
 }

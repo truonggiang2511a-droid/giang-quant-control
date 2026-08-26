@@ -1,8 +1,6 @@
 /* GQX MOBILE PREMIUM LAYER */
 @media (max-width: 900px) {
-  body {
-    background: radial-gradient(circle at 88% 0%, rgba(37,99,235,.20), transparent 34%), radial-gradient(circle at 0% 72%, rgba(6,182,212,.10), transparent 30%), #060912;
-  }
+  body { background: radial-gradient(circle at 88% 0%, rgba(37,99,235,.20), transparent 34%), radial-gradient(circle at 0% 72%, rgba(6,182,212,.10), transparent 30%), #060912; }
   .main { padding-top: 14px; }
   .topbar h1 { font-size: 24px; font-weight: 900; }
   .refresh { border-color: rgba(59,130,246,.22); background: linear-gradient(180deg, rgba(19,31,52,.96), rgba(8,15,27,.96)); box-shadow: 0 8px 24px rgba(0,0,0,.20); }
@@ -21,11 +19,10 @@
   .data-box { border-color:rgba(148,163,184,.08); background:rgba(10,18,31,.76); }
   .bot-actions button { min-height:46px; font-weight:900; box-shadow:0 8px 18px rgba(0,0,0,.16); }
   .search-wrap, .filter-select, .gqx-customer-search { border-radius:12px !important; border-color:rgba(96,165,250,.14) !important; background:rgba(10,18,32,.92) !important; box-shadow:inset 0 1px 0 rgba(255,255,255,.025), 0 7px 18px rgba(0,0,0,.12); }
-
   /* Active Bots: luôn hiển thị tên EA gốc. */
   .mini-bot-card h3 { font-size:0; font-weight:900; color:#f8fafc; line-height:1.2; }
-  .mini-bot-card h3::after { content:attr(data-gqx-ea-name); font-size:14px; }
-  .mini-bot-card h3:not([data-gqx-ea-name])::after { content:"GIANG QUANT X"; }
+  .mini-bot-card[data-gqx-ea-name] h3::after { content:attr(data-gqx-ea-name); font-size:14px; }
+  .mini-bot-card:not([data-gqx-ea-name]) h3::after { content:"GIANG QUANT X"; font-size:14px; }
   .mini-bot-card { padding:12px; border-radius:14px; }
   .mini-bot-card .mini-top { gap:10px; }
   .mini-bot-card .mini-avatar { width:38px; height:38px; border-radius:12px; }
@@ -44,5 +41,5 @@
   .bot-card { padding:12px; }
   .data-box { min-height:62px; padding:9px; }
   .bot-actions button { min-height:45px; }
-  .mini-bot-card h3::after { font-size:13px; }
+  .mini-bot-card[data-gqx-ea-name] h3::after, .mini-bot-card:not([data-gqx-ea-name]) h3::after { font-size:13px; }
 }

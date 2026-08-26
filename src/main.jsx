@@ -33,7 +33,7 @@ function RealtimeApp() {
     };
   }, []);
 
-  return <App realtimeTick={realtimeTick} />;
+  return <App key={realtimeTick} realtimeTick={realtimeTick} />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(

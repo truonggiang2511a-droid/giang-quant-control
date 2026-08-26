@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App.jsx";
 import CustomerManager from "./CustomerManager.jsx";
-import Mt5Manager from "./Mt5Manager.jsx";
+import MT5Manager from "./MT5Manager.jsx";
 import "./style.css";
 import { supabase } from "./supabase";
 
@@ -30,37 +30,33 @@ function RealtimeApp() {
       .channel("gqx-dashboard-realtime-v2")
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "bot_instances",
-        },
+        { event: "*", schema: "public", table: "bot_instances" },
         (payload) => triggerRefresh("bot_instances", payload)
       )
       .on(
         "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "heartbeat_logs",
-        },
+        { event: "*", schema: "public", table: "heartbeat_logs" },
         (payload) => triggerRefresh("heartbeat_logs", payload)
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "customers" },
+        (payload) => triggerRefresh("customers", payload)
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "licenses" },
+        (payload) => triggerRefresh("licenses", payload)
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "mt5_accounts" },
+        (payload) => triggerRefresh("mt5_accounts", payload)
       )
       .subscribe((status, error) => {
         console.log("[GQX] REALTIME STATUS:", status);
-
-        if (error) {
-          console.error("[GQX] REALTIME ERROR:", error);
-        }
-
-        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-          console.warn(
-            "[GQX] Realtime unavailable; App 5s polling remains active."
-          );
-        }
+        if (error) console.error("[GQX] REALTIME ERROR:", error);
       });
-
-    let authSubscription;
 
     supabase.auth.getSession().then(({ data }) => {
       if (active) setSession(data?.session || null);
@@ -72,12 +68,10 @@ function RealtimeApp() {
       }
     );
 
-    authSubscription = authListener?.subscription;
-
     return () => {
       active = false;
       supabase.removeChannel(channel);
-      authSubscription?.unsubscribe();
+      authListener?.subscription?.unsubscribe();
     };
   }, []);
 
@@ -90,8 +84,7 @@ function RealtimeApp() {
           <button
             type="button"
             onClick={() => setCustomerOpen(true)}
-            style={styles.customerButton}
-            title="Quản lý khách hàng, License và EA"
+            style={{ ...styles.actionButton, right: 24 }}
           >
             👤 KHÁCH HÀNG
           </button>
@@ -99,8 +92,7 @@ function RealtimeApp() {
           <button
             type="button"
             onClick={() => setMt5Open(true)}
-            style={styles.mt5Button}
-            title="Quản lý tài khoản MT5 và bật/tắt EA"
+            style={{ ...styles.actionButton, right: 190 }}
           >
             💻 MT5 / EA
           </button>
@@ -110,7 +102,7 @@ function RealtimeApp() {
             onClose={() => setCustomerOpen(false)}
           />
 
-          <Mt5Manager
+          <MT5Manager
             open={mt5Open}
             onClose={() => setMt5Open(false)}
           />
@@ -120,33 +112,21 @@ function RealtimeApp() {
   );
 }
 
-const baseFloatingButton = {
-  position: "fixed",
-  right: 24,
-  zIndex: 9000,
-  borderRadius: 14,
-  padding: "12px 16px",
-  color: "#fff",
-  fontWeight: 800,
-  fontSize: 12,
-  letterSpacing: 0.4,
-  cursor: "pointer",
-};
-
 const styles = {
-  customerButton: {
-    ...baseFloatingButton,
-    bottom: 80,
-    border: "1px solid rgba(59,130,246,.35)",
-    background: "#2563eb",
-    boxShadow: "0 12px 35px rgba(37,99,235,.28)",
-  },
-  mt5Button: {
-    ...baseFloatingButton,
+  actionButton: {
+    position: "fixed",
     bottom: 24,
-    border: "1px solid rgba(16,185,129,.35)",
-    background: "#059669",
-    boxShadow: "0 12px 35px rgba(5,150,105,.22)",
+    zIndex: 9000,
+    border: "1px solid rgba(59,130,246,.35)",
+    borderRadius: 14,
+    padding: "12px 16px",
+    background: "#2563eb",
+    color: "#fff",
+    fontWeight: 800,
+    fontSize: 12,
+    letterSpacing: 0.4,
+    boxShadow: "0 12px 35px rgba(37,99,235,.28)",
+    cursor: "pointer",
   },
 };
 

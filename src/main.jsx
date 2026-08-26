@@ -8,10 +8,21 @@ function RealtimeApp() {
   const [realtimeTick, setRealtimeTick] = useState(0);
 
   useEffect(() => {
-    if (!supabase) return undefined;
+    if (!supabase) {
+      console.error("[GQX] SUPABASE NOT CONFIGURED");
+      return undefined;
+    }
+
+    let active = true;
+
+    const triggerRefresh = (source, payload) => {
+      if (!active) return;
+      console.log(`[GQX] REALTIME ${source}:`, payload);
+      setRealtimeTick((value) => value + 1);
+    };
 
     const channel = supabase
-      .channel("gqx-bot-instances-realtime")
+      .channel("gqx-dashboard-realtime-v2")
       .on(
         "postgres_changes",
         {
@@ -19,21 +30,36 @@ function RealtimeApp() {
           schema: "public",
           table: "bot_instances",
         },
-        (payload) => {
-          console.log("[GQX] BOT REALTIME:", payload.eventType);
-          setRealtimeTick((value) => value + 1);
-        }
+        (payload) => triggerRefresh("bot_instances", payload)
       )
-      .subscribe((status) => {
+      .on(
+        "postgres_changes",
+        {
+          event: "*",
+          schema: "public",
+          table: "heartbeat_logs",
+        },
+        (payload) => triggerRefresh("heartbeat_logs", payload)
+      )
+      .subscribe((status, error) => {
         console.log("[GQX] REALTIME STATUS:", status);
+
+        if (error) {
+          console.error("[GQX] REALTIME ERROR:", error);
+        }
+
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          console.warn("[GQX] Realtime unavailable; App 5s polling remains active.");
+        }
       });
 
     return () => {
+      active = false;
       supabase.removeChannel(channel);
     };
   }, []);
 
-  return <App key={realtimeTick} realtimeTick={realtimeTick} />;
+  return <App key={realtimeTick} />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(

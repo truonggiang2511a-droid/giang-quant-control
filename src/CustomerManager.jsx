@@ -19,11 +19,27 @@ const EMPTY_LICENSE = {
 
 function generateLicenseKey() {
   const year = new Date().getFullYear();
-  const random = Math.random().toString(36).slice(2, 7).toUpperCase();
+  const random = Math.random().toString(36).slice(2, 10).toUpperCase();
   return `GQX-${year}-${random}`;
 }
 
-function CustomerManager({ open, onClose }) {
+async function createUniqueLicenseKey() {
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const key = generateLicenseKey();
+    const { data, error } = await supabase
+      .from("licenses")
+      .select("id")
+      .eq("license_key", key)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return key;
+  }
+
+  throw new Error("Không thể tạo License Key duy nhất. Vui lòng thử lại.");
+}
+
+export default function CustomerManager({ open, onClose }) {
   const [customers, setCustomers] = useState([]);
   const [licenses, setLicenses] = useState([]);
   const [mt5Accounts, setMt5Accounts] = useState([]);
@@ -32,7 +48,9 @@ function CustomerManager({ open, onClose }) {
   const [loading, setLoading] = useState(false);
   const [savingCustomer, setSavingCustomer] = useState(false);
   const [savingLicense, setSavingLicense] = useState(false);
+  const [deletingCustomerId, setDeletingCustomerId] = useState(null);
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   const [search, setSearch] = useState("");
   const [customerForm, setCustomerForm] = useState(EMPTY_CUSTOMER);
   const [licenseForm, setLicenseForm] = useState(EMPTY_LICENSE);
@@ -48,29 +66,24 @@ function CustomerManager({ open, onClose }) {
     setError("");
 
     try {
-      const [customerResult, licenseResult, mt5Result, botResult] =
-        await Promise.all([
-          supabase
-            .from("customers")
-            .select("id, full_name, phone, email, note, status, created_at, updated_at")
-            .order("created_at", { ascending: false }),
-          supabase
-            .from("licenses")
-            .select(
-              "id, customer_id, bot_id, license_key, status, expiry_date, max_accounts, created_at, updated_at, mt5_account_id, expire_date, product"
-            )
-            .order("created_at", { ascending: false }),
-          supabase
-            .from("mt5_accounts")
-            .select("id, mt5_login, broker, server, status")
-            .order("mt5_login", { ascending: true }),
-          supabase
-            .from("bot_instances")
-            .select(
-              "id, mt5_account_id, ea_name, ea_version, symbol, timeframe, status, enabled, last_seen, balance, equity, daily_profit, drawdown"
-            )
-            .order("created_at", { ascending: false }),
-        ]);
+      const [customerResult, licenseResult, mt5Result, botResult] = await Promise.all([
+        supabase
+          .from("customers")
+          .select("id, full_name, phone, email, note, status, created_at, updated_at")
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("licenses")
+          .select("id, customer_id, bot_id, license_key, status, expiry_date, max_accounts, created_at, updated_at, mt5_account_id, expire_date, product")
+          .order("created_at", { ascending: false }),
+        supabase
+          .from("mt5_accounts")
+          .select("id, customer_id, mt5_login, login, broker, server, status, is_connected, last_seen_at, balance, equity, drawdown_percent")
+          .order("mt5_login", { ascending: true }),
+        supabase
+          .from("bot_instances")
+          .select("id, mt5_account_id, ea_name, ea_version, symbol, timeframe, status, enabled, last_seen, balance, equity, daily_profit, drawdown")
+          .order("created_at", { ascending: false }),
+      ]);
 
       if (customerResult.error) throw customerResult.error;
       if (licenseResult.error) throw licenseResult.error;
@@ -96,31 +109,13 @@ function CustomerManager({ open, onClose }) {
 
     const channel = supabase
       .channel("gqx-customer-center-realtime")
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "customers" },
-        () => loadAll()
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "licenses" },
-        () => loadAll()
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "mt5_accounts" },
-        () => loadAll()
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "bot_instances" },
-        () => loadAll()
-      )
+      .on("postgres_changes", { event: "*", schema: "public", table: "customers" }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "licenses" }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "mt5_accounts" }, loadAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "bot_instances" }, loadAll)
       .subscribe((status, channelError) => {
         console.log("[GQX] CUSTOMER REALTIME:", status);
-        if (channelError) {
-          console.error("[GQX] CUSTOMER REALTIME ERROR:", channelError);
-        }
+        if (channelError) console.error("[GQX] CUSTOMER REALTIME ERROR:", channelError);
       });
 
     return () => {
@@ -140,50 +135,27 @@ function CustomerManager({ open, onClose }) {
 
   const customerRows = useMemo(() => {
     return customers.map((customer) => {
-      const customerLicenses = licenses.filter(
-        (license) => license.customer_id === customer.id
-      );
+      const customerLicenses = licenses.filter((license) => license.customer_id === customer.id);
+      const customerMt5 = mt5Accounts.filter((account) => account.customer_id === customer.id);
 
-      const links = customerLicenses.map((license) => {
-        const mt5 = license.mt5_account_id
-          ? mt5Map.get(license.mt5_account_id) || null
-          : null;
-        const bot = license.mt5_account_id
-          ? botMap.get(license.mt5_account_id) || null
-          : null;
+      const links = customerLicenses.map((license) => ({
+        license,
+        mt5: license.mt5_account_id ? mt5Map.get(license.mt5_account_id) || null : null,
+        bot: license.mt5_account_id ? botMap.get(license.mt5_account_id) || null : null,
+      }));
 
-        return { license, mt5, bot };
-      });
-
-      return { customer, links };
+      return { customer, links, customerLicenses, customerMt5 };
     });
-  }, [customers, licenses, mt5Map, botMap]);
+  }, [customers, licenses, mt5Accounts, mt5Map, botMap]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return customerRows;
 
-    return customerRows.filter(({ customer, links }) => {
-      const licenseText = links
-        .map(({ license }) => `${license.license_key} ${license.product}`)
-        .join(" ");
-
-      const mt5Text = links
-        .map(({ mt5 }) =>
-          mt5
-            ? `${mt5.mt5_login} ${mt5.broker} ${mt5.server}`
-            : ""
-        )
-        .join(" ");
-
-      return [
-        customer.full_name,
-        customer.phone,
-        customer.email,
-        customer.note,
-        licenseText,
-        mt5Text,
-      ]
+    return customerRows.filter(({ customer, links, customerMt5 }) => {
+      const licenseText = links.map(({ license }) => `${license.license_key} ${license.product}`).join(" ");
+      const mt5Text = customerMt5.map((mt5) => `${mt5.mt5_login || mt5.login || ""} ${mt5.broker || ""} ${mt5.server || ""}`).join(" ");
+      return [customer.full_name, customer.phone, customer.email, customer.note, licenseText, mt5Text]
         .filter(Boolean)
         .join(" ")
         .toLowerCase()
@@ -193,6 +165,8 @@ function CustomerManager({ open, onClose }) {
 
   async function saveCustomer(event) {
     event.preventDefault();
+    setError("");
+    setMessage("");
 
     if (!customerForm.full_name.trim()) {
       setError("Vui lòng nhập họ tên khách hàng.");
@@ -200,7 +174,6 @@ function CustomerManager({ open, onClose }) {
     }
 
     setSavingCustomer(true);
-    setError("");
 
     try {
       const payload = {
@@ -213,19 +186,14 @@ function CustomerManager({ open, onClose }) {
       };
 
       if (editingCustomerId) {
-        const { error: updateError } = await supabase
-          .from("customers")
-          .update(payload)
-          .eq("id", editingCustomerId);
+        const { error: updateError } = await supabase.from("customers").update(payload).eq("id", editingCustomerId);
         if (updateError) throw updateError;
+        setMessage("✅ Đã cập nhật khách hàng.");
       } else {
-        const { data, error: insertError } = await supabase
-          .from("customers")
-          .insert(payload)
-          .select("id")
-          .single();
+        const { data, error: insertError } = await supabase.from("customers").insert(payload).select("id").single();
         if (insertError) throw insertError;
         setSelectedCustomerId(data?.id || null);
+        setMessage("✅ Đã thêm khách hàng.");
       }
 
       setCustomerForm(EMPTY_CUSTOMER);
@@ -241,13 +209,13 @@ function CustomerManager({ open, onClose }) {
 
   async function saveLicense(event) {
     event.preventDefault();
+    setError("");
+    setMessage("");
 
     if (!selectedCustomerId) {
       setError("Hãy chọn khách hàng trước khi tạo License.");
       return;
     }
-
-    const key = licenseForm.license_key.trim() || generateLicenseKey();
 
     if (!licenseForm.expire_date) {
       setError("Vui lòng chọn ngày hết hạn License.");
@@ -255,9 +223,10 @@ function CustomerManager({ open, onClose }) {
     }
 
     setSavingLicense(true);
-    setError("");
 
     try {
+      const key = licenseForm.license_key.trim() || await createUniqueLicenseKey();
+
       const payload = {
         customer_id: selectedCustomerId,
         license_key: key,
@@ -269,11 +238,21 @@ function CustomerManager({ open, onClose }) {
         updated_at: new Date().toISOString(),
       };
 
-      const { error: insertError } = await supabase
-        .from("licenses")
-        .insert(payload);
+      const { error: insertError } = await supabase.from("licenses").insert(payload);
 
-      if (insertError) throw insertError;
+      if (insertError) {
+        if (String(insertError.message || "").includes("licenses_license_key_key")) {
+          const retryKey = await createUniqueLicenseKey();
+          const retryPayload = { ...payload, license_key: retryKey };
+          const { error: retryError } = await supabase.from("licenses").insert(retryPayload);
+          if (retryError) throw retryError;
+          setMessage(`✅ Đã tạo License: ${retryKey}`);
+        } else {
+          throw insertError;
+        }
+      } else {
+        setMessage(`✅ Đã tạo License: ${key}`);
+      }
 
       setLicenseForm(EMPTY_LICENSE);
       await loadAll();
@@ -282,6 +261,47 @@ function CustomerManager({ open, onClose }) {
       setError(err?.message || "Không thể tạo License.");
     } finally {
       setSavingLicense(false);
+    }
+  }
+
+  async function deleteCustomer(row) {
+    const { customer, customerLicenses, customerMt5 } = row;
+
+    setError("");
+    setMessage("");
+
+    if (!customer?.id) return;
+
+    if (customerLicenses.length > 0 || customerMt5.length > 0) {
+      setError("Không thể xóa khách đang có License hoặc MT5. Hãy bỏ liên kết/xóa dữ liệu liên quan trước.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Xóa khách hàng "${customer.full_name}"? Hành động này không thể hoàn tác.`
+    );
+
+    if (!confirmed) return;
+
+    setDeletingCustomerId(customer.id);
+
+    try {
+      const { error: deleteError } = await supabase.from("customers").delete().eq("id", customer.id);
+      if (deleteError) throw deleteError;
+
+      if (selectedCustomerId === customer.id) {
+        setSelectedCustomerId(null);
+        setCustomerForm(EMPTY_CUSTOMER);
+        setEditingCustomerId(null);
+      }
+
+      setMessage("✅ Đã xóa khách hàng.");
+      await loadAll();
+    } catch (err) {
+      console.error("CUSTOMER DELETE ERROR:", err);
+      setError(err?.message || "Không thể xóa khách hàng. Kiểm tra quyền DELETE/RLS trong Supabase.");
+    } finally {
+      setDeletingCustomerId(null);
     }
   }
 
@@ -295,19 +315,21 @@ function CustomerManager({ open, onClose }) {
       note: customer.note || "",
       status: customer.status || "active",
     });
+    setError("");
+    setMessage("");
   }
 
   function selectCustomer(customer) {
     setSelectedCustomerId(customer.id);
     setEditingCustomerId(null);
     setCustomerForm(EMPTY_CUSTOMER);
+    setError("");
+    setMessage("");
   }
 
   if (!open) return null;
 
-  const selectedRow = customerRows.find(
-    ({ customer }) => customer.id === selectedCustomerId
-  );
+  const selectedRow = customerRows.find(({ customer }) => customer.id === selectedCustomerId);
 
   return (
     <div style={styles.backdrop}>
@@ -316,148 +338,41 @@ function CustomerManager({ open, onClose }) {
           <div>
             <div style={styles.eyebrow}>CUSTOMER MANAGEMENT</div>
             <h2 style={styles.title}>Khách hàng & EA</h2>
-            <p style={styles.subtitle}>
-              Customer → License → MT5 → EA. Dữ liệu cập nhật trực tiếp từ Supabase.
-            </p>
+            <p style={styles.subtitle}>Customer → License → MT5 → EA · Realtime</p>
           </div>
-
           <button style={styles.closeButton} onClick={onClose}>×</button>
         </div>
 
         {error && <div style={styles.error}>{error}</div>}
+        {message && <div style={styles.success}>{message}</div>}
 
         <div style={styles.body}>
           <div style={styles.leftColumn}>
             <form onSubmit={saveCustomer} style={styles.card}>
-              <div style={styles.formTitle}>
-                {editingCustomerId ? "SỬA KHÁCH HÀNG" : "THÊM KHÁCH HÀNG"}
-              </div>
-
-              <input
-                style={styles.input}
-                placeholder="Họ và tên *"
-                value={customerForm.full_name}
-                onChange={(e) =>
-                  setCustomerForm((v) => ({ ...v, full_name: e.target.value }))
-                }
-              />
-
-              <input
-                style={styles.input}
-                placeholder="Số điện thoại"
-                value={customerForm.phone}
-                onChange={(e) =>
-                  setCustomerForm((v) => ({ ...v, phone: e.target.value }))
-                }
-              />
-
-              <input
-                style={styles.input}
-                type="email"
-                placeholder="Email"
-                value={customerForm.email}
-                onChange={(e) =>
-                  setCustomerForm((v) => ({ ...v, email: e.target.value }))
-                }
-              />
-
-              <textarea
-                style={{ ...styles.input, minHeight: 80, resize: "vertical" }}
-                placeholder="Ghi chú"
-                value={customerForm.note}
-                onChange={(e) =>
-                  setCustomerForm((v) => ({ ...v, note: e.target.value }))
-                }
-              />
-
-              <select
-                style={styles.input}
-                value={customerForm.status}
-                onChange={(e) =>
-                  setCustomerForm((v) => ({ ...v, status: e.target.value }))
-                }
-              >
+              <div style={styles.formTitle}>{editingCustomerId ? "SỬA KHÁCH HÀNG" : "THÊM KHÁCH HÀNG"}</div>
+              <input style={styles.input} placeholder="Họ và tên *" value={customerForm.full_name} onChange={(e) => setCustomerForm((v) => ({ ...v, full_name: e.target.value }))} />
+              <input style={styles.input} placeholder="Số điện thoại" value={customerForm.phone} onChange={(e) => setCustomerForm((v) => ({ ...v, phone: e.target.value }))} />
+              <input style={styles.input} type="email" placeholder="Email" value={customerForm.email} onChange={(e) => setCustomerForm((v) => ({ ...v, email: e.target.value }))} />
+              <textarea style={{ ...styles.input, minHeight: 80, resize: "vertical" }} placeholder="Ghi chú" value={customerForm.note} onChange={(e) => setCustomerForm((v) => ({ ...v, note: e.target.value }))} />
+              <select style={styles.input} value={customerForm.status} onChange={(e) => setCustomerForm((v) => ({ ...v, status: e.target.value }))}>
                 <option value="active">ACTIVE</option>
                 <option value="inactive">INACTIVE</option>
                 <option value="pending">PENDING</option>
               </select>
-
               <div style={styles.actions}>
-                <button disabled={savingCustomer} style={styles.primaryButton}>
-                  {savingCustomer
-                    ? "ĐANG LƯU..."
-                    : editingCustomerId
-                      ? "LƯU THAY ĐỔI"
-                      : "THÊM KHÁCH"}
-                </button>
-
-                {editingCustomerId && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setEditingCustomerId(null);
-                      setCustomerForm(EMPTY_CUSTOMER);
-                    }}
-                    style={styles.secondaryButton}
-                  >
-                    HỦY
-                  </button>
-                )}
+                <button disabled={savingCustomer} style={styles.primaryButton}>{savingCustomer ? "ĐANG LƯU..." : editingCustomerId ? "LƯU THAY ĐỔI" : "THÊM KHÁCH"}</button>
+                {editingCustomerId && <button type="button" style={styles.secondaryButton} onClick={() => { setEditingCustomerId(null); setCustomerForm(EMPTY_CUSTOMER); }}>HỦY</button>}
               </div>
             </form>
 
             <form onSubmit={saveLicense} style={styles.card}>
               <div style={styles.formTitle}>TẠO LICENSE</div>
-              <div style={styles.helperText}>
-                {selectedRow
-                  ? `Cho: ${selectedRow.customer.full_name}`
-                  : "Chọn một khách hàng trước"}
-              </div>
-
-              <input
-                style={styles.input}
-                placeholder="License key (để trống = tự tạo)"
-                value={licenseForm.license_key}
-                onChange={(e) =>
-                  setLicenseForm((v) => ({ ...v, license_key: e.target.value }))
-                }
-              />
-
-              <input
-                style={styles.input}
-                type="date"
-                value={licenseForm.expire_date}
-                onChange={(e) =>
-                  setLicenseForm((v) => ({ ...v, expire_date: e.target.value }))
-                }
-              />
-
-              <input
-                style={styles.input}
-                type="number"
-                min="1"
-                value={licenseForm.max_accounts}
-                onChange={(e) =>
-                  setLicenseForm((v) => ({ ...v, max_accounts: e.target.value }))
-                }
-                placeholder="Số tài khoản tối đa"
-              />
-
-              <input
-                style={styles.input}
-                value={licenseForm.product}
-                onChange={(e) =>
-                  setLicenseForm((v) => ({ ...v, product: e.target.value }))
-                }
-                placeholder="Product"
-              />
-
-              <button
-                disabled={savingLicense || !selectedCustomerId}
-                style={styles.primaryButton}
-              >
-                {savingLicense ? "ĐANG TẠO..." : "TẠO LICENSE"}
-              </button>
+              <div style={styles.helperText}>{selectedRow ? `Cho: ${selectedRow.customer.full_name}` : "Chọn khách hàng trước"}</div>
+              <input style={styles.input} placeholder="License key (để trống = tự tạo)" value={licenseForm.license_key} onChange={(e) => setLicenseForm((v) => ({ ...v, license_key: e.target.value }))} />
+              <input style={styles.input} type="date" value={licenseForm.expire_date} onChange={(e) => setLicenseForm((v) => ({ ...v, expire_date: e.target.value }))} />
+              <input style={styles.input} type="number" min="1" value={licenseForm.max_accounts} onChange={(e) => setLicenseForm((v) => ({ ...v, max_accounts: e.target.value }))} placeholder="Max accounts" />
+              <input style={styles.input} value={licenseForm.product} onChange={(e) => setLicenseForm((v) => ({ ...v, product: e.target.value }))} placeholder="Product" />
+              <button disabled={savingLicense || !selectedCustomerId} style={styles.primaryButton}>{savingLicense ? "ĐANG TẠO..." : "TẠO LICENSE"}</button>
             </form>
           </div>
 
@@ -465,15 +380,9 @@ function CustomerManager({ open, onClose }) {
             <div style={styles.listHeader}>
               <div>
                 <div style={styles.formTitle}>KHÁCH HÀNG ({filteredRows.length})</div>
-                <div style={styles.helperText}>🟢 realtime</div>
+                <div style={styles.helperText}>● REALTIME</div>
               </div>
-
-              <input
-                style={{ ...styles.input, maxWidth: 280, marginTop: 0 }}
-                placeholder="Tìm tên, SĐT, license, MT5..."
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-              />
+              <input style={{ ...styles.input, maxWidth: 300, marginTop: 0 }} placeholder="Tìm tên, SĐT, license, MT5..." value={search} onChange={(e) => setSearch(e.target.value)} />
             </div>
 
             {loading ? (
@@ -482,84 +391,44 @@ function CustomerManager({ open, onClose }) {
               <div style={styles.empty}>Chưa có khách hàng.</div>
             ) : (
               <div style={styles.customerList}>
-                {filteredRows.map(({ customer, links }) => (
-                  <div
-                    key={customer.id}
-                    style={{
-                      ...styles.customerCard,
-                      ...(selectedCustomerId === customer.id
-                        ? styles.selectedCard
-                        : {}),
-                    }}
-                    onClick={() => selectCustomer(customer)}
-                  >
-                    <div style={styles.customerMain}>
-                      <div style={styles.nameRow}>
-                        <strong>{customer.full_name}</strong>
-                        <span
-                          style={{
-                            ...styles.status,
-                            ...(customer.status === "active"
-                              ? styles.statusActive
-                              : styles.statusMuted),
-                          }}
-                        >
-                          {String(customer.status || "--").toUpperCase()}
-                        </span>
+                {filteredRows.map((row) => {
+                  const { customer, links, customerLicenses, customerMt5 } = row;
+                  const mt5OnlyText = customerMt5.filter((a) => !links.some(({ license }) => license.mt5_account_id === a.id)).map((a) => `MT5 ${a.mt5_login || a.login}`).join(", ");
+
+                  return (
+                    <div key={customer.id} style={{ ...styles.customerCard, ...(selectedCustomerId === customer.id ? styles.selectedCard : {}) }} onClick={() => selectCustomer(customer)}>
+                      <div style={styles.customerMain}>
+                        <div style={styles.nameRow}>
+                          <strong>{customer.full_name}</strong>
+                          <span style={styles.badge}>{String(customer.status || "active").toUpperCase()}</span>
+                        </div>
+                        <div style={styles.contact}>{customer.phone || "--"} · {customer.email || "--"}</div>
+
+                        {links.length === 0 && customerMt5.length === 0 ? (
+                          <div style={styles.subtle}>Chưa có License / MT5</div>
+                        ) : (
+                          <div style={styles.linkList}>
+                            {links.map(({ license, mt5, bot }) => (
+                              <div key={license.id} style={styles.linkRow}>
+                                <div><b>🔑 {license.license_key}</b><span style={styles.subtle}> {String(license.status || "").toUpperCase()} · {license.expire_date || license.expiry_date || "--"}</span></div>
+                                <div style={styles.subtle}>MT5 {mt5?.mt5_login || mt5?.login || "--"} · {mt5?.broker || "--"} · {mt5?.server || "--"}</div>
+                                <div style={styles.subtle}>EA {bot?.ea_name || "--"} · {bot ? (bot.enabled ? "🟢 ENABLED" : "🔴 PAUSED") : "--"}</div>
+                              </div>
+                            ))}
+                            {mt5OnlyText && <div style={styles.subtle}>{mt5OnlyText}</div>}
+                          </div>
+                        )}
                       </div>
 
-                      <span>📱 {customer.phone || "Chưa có SĐT"}</span>
-                      <span>📧 {customer.email || "Chưa có email"}</span>
-                      <small>{customer.note || "Không có ghi chú"}</small>
-
-                      {links.length === 0 ? (
-                        <div style={styles.noLink}>Chưa có License</div>
-                      ) : (
-                        <div style={styles.linkList}>
-                          {links.map(({ license, mt5, bot }) => (
-                            <div key={license.id} style={styles.linkRow}>
-                              <div>
-                                <strong>🔑 {license.license_key}</strong>
-                                <div style={styles.miniText}>
-                                  {license.product || "GIANG QUANT X"} · Hết hạn {license.expire_date || license.expiry_date || "--"}
-                                </div>
-                              </div>
-
-                              <div style={styles.liveBlock}>
-                                <div>
-                                  MT5: {mt5?.mt5_login || "Chưa liên kết"}
-                                  {mt5?.broker ? ` · ${mt5.broker}` : ""}
-                                </div>
-                                <div>
-                                  EA: {bot?.ea_name || "Chưa có bot"} · {bot ? "🟢/🔴 theo heartbeat" : "--"}
-                                </div>
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                      <div style={styles.cardActions}>
+                        <button type="button" style={styles.editButton} onClick={(e) => { e.stopPropagation(); editCustomer(customer); }}>SỬA</button>
+                        <button type="button" style={styles.deleteButton} disabled={deletingCustomerId === customer.id} onClick={(e) => { e.stopPropagation(); deleteCustomer(row); }}>
+                          {deletingCustomerId === customer.id ? "ĐANG XÓA..." : "XÓA"}
+                        </button>
+                      </div>
                     </div>
-
-                    <button
-                      style={styles.editButton}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        editCustomer(customer);
-                      }}
-                    >
-                      SỬA
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {selectedRow && (
-              <div style={styles.selectedSummary}>
-                <strong>Đang chọn: {selectedRow.customer.full_name}</strong>
-                <div>
-                  License: {selectedRow.links.length} · EA/MT5 đang liên kết: {selectedRow.links.filter((x) => x.mt5 || x.bot).length}
-                </div>
+                  );
+                })}
               </div>
             )}
           </div>
@@ -570,188 +439,38 @@ function CustomerManager({ open, onClose }) {
 }
 
 const styles = {
-  backdrop: {
-    position: "fixed",
-    inset: 0,
-    zIndex: 9999,
-    background: "rgba(3, 7, 18, 0.78)",
-    backdropFilter: "blur(8px)",
-    padding: 24,
-    boxSizing: "border-box",
-  },
-  panel: {
-    width: "min(1280px, 100%)",
-    height: "min(850px, 100%)",
-    margin: "0 auto",
-    background: "#0b1220",
-    border: "1px solid rgba(148, 163, 184, 0.18)",
-    borderRadius: 22,
-    boxShadow: "0 30px 90px rgba(0,0,0,.45)",
-    display: "flex",
-    flexDirection: "column",
-    overflow: "hidden",
-    color: "#e5e7eb",
-  },
-  header: {
-    padding: "22px 24px",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
-    borderBottom: "1px solid rgba(148,163,184,.12)",
-  },
-  eyebrow: { fontSize: 11, letterSpacing: 1.6, opacity: 0.6 },
+  backdrop: { position: "fixed", inset: 0, zIndex: 11000, background: "rgba(3,7,18,.78)", backdropFilter: "blur(8px)", padding: 24, boxSizing: "border-box" },
+  panel: { width: "min(1200px,100%)", height: "min(820px,100%)", margin: "0 auto", background: "#0b1220", border: "1px solid rgba(148,163,184,.18)", borderRadius: 22, color: "#e5e7eb", boxShadow: "0 30px 90px rgba(0,0,0,.45)", overflow: "hidden", display: "flex", flexDirection: "column" },
+  header: { padding: "22px 24px", borderBottom: "1px solid rgba(148,163,184,.12)", display: "flex", justifyContent: "space-between", alignItems: "flex-start" },
+  eyebrow: { fontSize: 11, letterSpacing: 1.6, opacity: .6 },
   title: { margin: "5px 0 2px", fontSize: 28 },
-  subtitle: { margin: 0, opacity: 0.65 },
-  closeButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    border: "1px solid rgba(148,163,184,.2)",
-    background: "rgba(255,255,255,.04)",
-    color: "white",
-    fontSize: 26,
-    cursor: "pointer",
-  },
-  body: {
-    flex: 1,
-    minHeight: 0,
-    display: "grid",
-    gridTemplateColumns: "330px 1fr",
-    gap: 16,
-    padding: 16,
-  },
-  leftColumn: {
-    minWidth: 0,
-    display: "flex",
-    flexDirection: "column",
-    gap: 16,
-    overflow: "auto",
-  },
-  card: {
-    padding: 18,
-    borderRadius: 18,
-    background: "rgba(255,255,255,.035)",
-    border: "1px solid rgba(148,163,184,.1)",
-  },
-  cardList: {
-    minWidth: 0,
-    minHeight: 0,
-    padding: 18,
-    borderRadius: 18,
-    background: "rgba(255,255,255,.035)",
-    border: "1px solid rgba(148,163,184,.1)",
-    overflow: "hidden",
-    display: "flex",
-    flexDirection: "column",
-  },
-  formTitle: { fontSize: 12, fontWeight: 700, letterSpacing: 1.1, opacity: 0.75 },
-  helperText: { fontSize: 11, opacity: 0.55, marginTop: 4 },
-  input: {
-    width: "100%",
-    boxSizing: "border-box",
-    marginTop: 11,
-    padding: "12px 13px",
-    borderRadius: 12,
-    border: "1px solid rgba(148,163,184,.16)",
-    background: "rgba(15,23,42,.8)",
-    color: "#f8fafc",
-    outline: "none",
-  },
-  actions: { display: "flex", gap: 8, marginTop: 14 },
-  primaryButton: {
-    width: "100%",
-    border: 0,
-    borderRadius: 12,
-    padding: "12px 14px",
-    background: "#2563eb",
-    color: "white",
-    fontWeight: 700,
-    cursor: "pointer",
-    marginTop: 12,
-  },
-  secondaryButton: {
-    border: "1px solid rgba(148,163,184,.18)",
-    borderRadius: 12,
-    padding: "12px 14px",
-    background: "transparent",
-    color: "#e5e7eb",
-    cursor: "pointer",
-  },
-  listHeader: {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 12,
-  },
-  customerList: { overflow: "auto", marginTop: 12, paddingRight: 4 },
-  customerCard: {
-    display: "flex",
-    justifyContent: "space-between",
-    gap: 14,
-    padding: 15,
-    borderRadius: 14,
-    background: "rgba(15,23,42,.62)",
-    border: "1px solid rgba(148,163,184,.1)",
-    marginBottom: 10,
-    cursor: "pointer",
-  },
-  selectedCard: {
-    border: "1px solid rgba(59,130,246,.55)",
-    boxShadow: "0 0 0 1px rgba(37,99,235,.12) inset",
-  },
-  customerMain: {
-    minWidth: 0,
-    display: "flex",
-    flexDirection: "column",
-    gap: 4,
-  },
-  nameRow: { display: "flex", alignItems: "center", gap: 9, flexWrap: "wrap" },
-  status: {
-    padding: "5px 9px",
-    borderRadius: 999,
-    fontSize: 10,
-    fontWeight: 800,
-  },
-  statusActive: { background: "rgba(34,197,94,.12)", color: "#4ade80" },
-  statusMuted: { background: "rgba(148,163,184,.1)", color: "#cbd5e1" },
-  editButton: {
-    alignSelf: "flex-start",
-    border: "1px solid rgba(148,163,184,.18)",
-    borderRadius: 9,
-    background: "transparent",
-    color: "#e5e7eb",
-    padding: "7px 10px",
-    cursor: "pointer",
-  },
+  subtitle: { margin: 0, opacity: .6 },
+  closeButton: { width: 40, height: 40, borderRadius: 12, background: "rgba(255,255,255,.04)", color: "white", border: "1px solid rgba(148,163,184,.18)", fontSize: 25, cursor: "pointer" },
+  body: { flex: 1, minHeight: 0, display: "grid", gridTemplateColumns: "340px 1fr", gap: 16, padding: 16, overflow: "hidden" },
+  leftColumn: { minWidth: 0, overflow: "auto" },
+  card: { padding: 18, background: "rgba(255,255,255,.035)", border: "1px solid rgba(148,163,184,.1)", borderRadius: 18, marginBottom: 14 },
+  cardList: { minWidth: 0, minHeight: 0, padding: 18, background: "rgba(255,255,255,.035)", border: "1px solid rgba(148,163,184,.1)", borderRadius: 18, overflow: "auto" },
+  listHeader: { display: "flex", gap: 14, justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 },
+  formTitle: { fontSize: 12, fontWeight: 800, letterSpacing: 1.1 },
+  helperText: { fontSize: 11, opacity: .55, marginTop: 4 },
+  input: { width: "100%", boxSizing: "border-box", marginTop: 9, padding: "11px 13px", borderRadius: 12, border: "1px solid rgba(148,163,184,.16)", background: "#0f172a", color: "#f8fafc", outline: "none" },
+  actions: { display: "flex", gap: 8, marginTop: 13 },
+  primaryButton: { flex: 1, padding: "11px 13px", border: 0, borderRadius: 11, background: "#2563eb", color: "white", fontWeight: 800, cursor: "pointer" },
+  secondaryButton: { padding: "11px 13px", borderRadius: 11, background: "rgba(255,255,255,.05)", color: "#e5e7eb", border: "1px solid rgba(148,163,184,.15)", cursor: "pointer" },
+  error: { margin: "12px 16px 0", padding: 11, borderRadius: 10, background: "rgba(239,68,68,.12)", color: "#fca5a5" },
+  success: { margin: "12px 16px 0", padding: 11, borderRadius: 10, background: "rgba(34,197,94,.12)", color: "#86efac" },
+  empty: { padding: 40, textAlign: "center", opacity: .55 },
+  customerList: { display: "flex", flexDirection: "column", gap: 9 },
+  customerCard: { display: "flex", gap: 14, alignItems: "flex-start", justifyContent: "space-between", padding: 15, borderRadius: 14, background: "rgba(15,23,42,.65)", border: "1px solid rgba(148,163,184,.1)", cursor: "pointer" },
+  selectedCard: { border: "1px solid rgba(59,130,246,.55)", boxShadow: "0 0 0 1px rgba(59,130,246,.12) inset" },
+  customerMain: { minWidth: 0, flex: 1 },
+  nameRow: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  badge: { fontSize: 9, padding: "4px 7px", borderRadius: 999, background: "rgba(59,130,246,.12)", color: "#93c5fd", fontWeight: 800 },
+  contact: { marginTop: 4, fontSize: 12, opacity: .65 },
+  subtle: { fontSize: 11, opacity: .58, marginTop: 4 },
   linkList: { marginTop: 8, display: "grid", gap: 7 },
-  linkRow: {
-    display: "grid",
-    gridTemplateColumns: "1fr 1fr",
-    gap: 10,
-    padding: "8px 10px",
-    borderRadius: 10,
-    background: "rgba(255,255,255,.035)",
-    border: "1px solid rgba(148,163,184,.08)",
-  },
-  miniText: { fontSize: 10, opacity: 0.55, marginTop: 2 },
-  liveBlock: { fontSize: 11, opacity: 0.8 },
-  noLink: { fontSize: 11, opacity: 0.55, marginTop: 7 },
-  selectedSummary: {
-    marginTop: 12,
-    padding: 12,
-    borderRadius: 12,
-    background: "rgba(37,99,235,.08)",
-    border: "1px solid rgba(59,130,246,.18)",
-    fontSize: 12,
-  },
-  empty: { padding: 30, textAlign: "center", opacity: 0.6 },
-  error: {
-    margin: "12px 16px 0",
-    padding: "10px 12px",
-    borderRadius: 10,
-    background: "rgba(239,68,68,.12)",
-    color: "#fca5a5",
-  },
+  linkRow: { padding: 9, borderRadius: 10, background: "rgba(2,6,23,.38)", border: "1px solid rgba(148,163,184,.08)" },
+  cardActions: { display: "flex", gap: 7, flexShrink: 0 },
+  editButton: { border: "1px solid rgba(59,130,246,.25)", background: "rgba(59,130,246,.09)", color: "#93c5fd", padding: "8px 10px", borderRadius: 9, cursor: "pointer" },
+  deleteButton: { border: "1px solid rgba(239,68,68,.25)", background: "rgba(239,68,68,.08)", color: "#fca5a5", padding: "8px 10px", borderRadius: 9, cursor: "pointer" },
 };
-
-export default CustomerManager;

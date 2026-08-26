@@ -1,8 +1,4 @@
-from pathlib import Path
-
-# Tạo App.jsx hoàn chỉnh từ nội dung Giang đã gửi, với phần AUTO REFRESH
-# được thay bằng Supabase Realtime + fallback polling 30 giây.
-app_jsx = r'''import React, {
+import React, {
   Component,
   useEffect,
   useMemo,
@@ -58,6 +54,7 @@ const NAV_ITEMS = [
 
 /* =========================================================
    ERROR BOUNDARY
+   Không để Dashboard trắng khi component lỗi.
 ========================================================= */
 
 class AppErrorBoundary extends Component {
@@ -682,72 +679,22 @@ function ControlCenter() {
   }
 
   /* =======================================================
-     INITIAL LOAD + SUPABASE REALTIME
+     AUTO REFRESH
   ======================================================= */
 
   useEffect(() => {
-    if (!session || !supabase) {
-      return undefined;
+    if (!session) {
+      return;
     }
 
-    let mounted = true;
-
-    // Tải dữ liệu lần đầu khi Dashboard mở
     loadData(true);
 
-    // Lắng nghe mọi thay đổi INSERT / UPDATE / DELETE
-    // trên bảng public.bot_instances.
-    const channel = supabase
-      .channel("bot-instances-realtime")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "bot_instances",
-        },
-        (payload) => {
-          console.log(
-            "[GQX] BOT REALTIME UPDATE:",
-            payload
-          );
-
-          if (!mounted) {
-            return;
-          }
-
-          // Đọc lại database để đảm bảo toàn bộ
-          // thông tin Dashboard luôn đồng bộ.
-          loadData(false);
-        }
-      )
-      .subscribe((status) => {
-        console.log(
-          "[GQX] REALTIME STATUS:",
-          status
-        );
-      });
-
-    // Fallback 30 giây:
-    // nếu WebSocket/Reatime chập chờn thì Dashboard
-    // vẫn tự kiểm tra database mà không cần F5.
-    const fallbackTimer =
-      setInterval(() => {
-        if (mounted) {
-          loadData(false);
-        }
-      }, 30000);
+    const timer = setInterval(() => {
+      loadData(false);
+    }, 5000);
 
     return () => {
-      mounted = false;
-
-      clearInterval(
-        fallbackTimer
-      );
-
-      supabase.removeChannel(
-        channel
-      );
+      clearInterval(timer);
     };
   }, [session]);
 
@@ -2572,20 +2519,3 @@ function LoginScreen() {
     </div>
   );
 }
-'''
-
-path = Path("/mnt/data/App_realtime.jsx")
-path.write_text(app_jsx, encoding="utf-8")
-
-# Kiểm tra nhanh các phần quan trọng đã có.
-checks = {
-    "Supabase import": 'import { supabase } from "./supabase";' in app_jsx,
-    "bot_instances query": '.from("bot_instances")' in app_jsx,
-    "Realtime subscription": 'postgres_changes' in app_jsx,
-    "Realtime table": 'table: "bot_instances"' in app_jsx,
-    "30s fallback": '}, 30000);' in app_jsx,
-    "remove channel": 'supabase.removeChannel' in app_jsx,
-}
-print(f"Đã tạo: {path}")
-print("Kiểm tra:", checks)
-print(f"Số dòng: {len(app_jsx.splitlines())}")
